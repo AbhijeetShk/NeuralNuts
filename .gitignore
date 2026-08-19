@@ -1,0 +1,9 @@
+.ipynb_checkpoints
+.history
+*.pyc
+__pycache__
+*.pyo
+*.pyd
+.Python
+env/
+.DS_Store
