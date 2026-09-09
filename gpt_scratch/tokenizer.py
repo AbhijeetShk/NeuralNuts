@@ -1,3 +1,7 @@
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+
 class BasicTokenizer:
 
     def encode(self, text):
@@ -62,8 +66,76 @@ ids = [1, 2, 1, 2, 3, 1, 2]
 
 stats = get_stats(ids)
 
-print(stats)
+# print(stats)
 
 ids = merge(ids, (1, 2), 256)
 
-print(ids)
+# print(ids)
+
+
+# [240, 159, 154, 128]
+# {(1, 2): 3, (2, 1): 1, (2, 3): 1, (3, 1): 1}
+# [256, 256, 3, 256]
+
+
+class BPETokenizer:
+
+    def __init__(self):
+        self.merges = {}
+        self.vocab = {}
+
+    def train(self, text, vocab_size):
+
+        assert vocab_size >= 256
+
+        num_merges = vocab_size - 256
+
+        ids = list(text.encode("utf-8"))
+
+        self.vocab = {
+            i: bytes([i])
+            for i in range(256)
+        }
+
+        for i in range(num_merges):
+
+            stats = get_stats(ids)
+
+            if not stats:
+                break
+
+            pair = max(
+                stats,
+                key=stats.get
+            )
+
+            idx = 256 + i
+
+            ids = merge(
+                ids,
+                pair,
+                idx
+            )
+
+            self.merges[pair] = idx
+
+            self.vocab[idx] = (
+                self.vocab[pair[0]]
+                + self.vocab[pair[1]]
+            )
+
+with open(BASE_DIR / "input.txt", "r", encoding="utf-8") as f:
+    text = f.read()
+
+tokenizer = BPETokenizer()
+
+tokenizer.train(
+    text,
+    vocab_size=512
+)
+
+print(
+    "learned merges:",
+    len(tokenizer.merges)
+)
+# learned merges: 256
