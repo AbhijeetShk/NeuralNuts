@@ -124,18 +124,58 @@ class BPETokenizer:
                 + self.vocab[pair[1]]
             )
 
-with open(BASE_DIR / "input.txt", "r", encoding="utf-8") as f:
-    text = f.read()
+# with open(BASE_DIR / "input.txt", "r", encoding="utf-8") as f:
+#     text = f.read()
 
-tokenizer = BPETokenizer()
+# tokenizer = BPETokenizer()
 
-tokenizer.train(
-    text,
-    vocab_size=512
-)
+# tokenizer.train(
+#     text,
+#     vocab_size=512
+# )
 
-print(
-    "learned merges:",
-    len(tokenizer.merges)
-)
+# print(
+#     "learned merges:",
+#     len(tokenizer.merges)
+# )
 # learned merges: 256
+
+
+def encode(self, text):
+
+    ids = list(text.encode("utf-8"))
+
+    while len(ids) >= 2:
+
+        stats = get_stats(ids)
+
+        pairs = [
+            pair
+            for pair in stats
+            if pair in self.merges
+        ]
+
+        if not pairs:
+            break
+
+        pair = min(
+            pairs,
+            key=lambda p: self.merges[p]
+        )
+
+        idx = self.merges[pair]
+
+        ids = merge(
+            ids,
+            pair,
+            idx
+        )
+
+    return ids
+
+encoded = tokenizer.encode(
+    "hello world"
+)
+
+print(encoded)
+# [104, 101, 108, 108, 111, 32, 119, 111, 114, 108, 100]
