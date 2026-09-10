@@ -177,5 +177,36 @@ encoded = tokenizer.encode(
     "hello world"
 )
 
-print(encoded)
+# print(encoded)
 # [104, 101, 108, 108, 111, 32, 119, 111, 114, 108, 100]
+
+
+def decode(self, ids):
+
+    tokens = [
+        self.vocab[idx]
+        for idx in ids
+    ]
+
+    text_bytes = b"".join(tokens)
+
+    return text_bytes.decode(
+        "utf-8",
+        errors="replace"
+    )
+
+
+text = "Hello world! This is GPT."
+
+ids = tokenizer.encode(text)
+
+decoded = tokenizer.decode(ids)
+
+print(ids)
+print(decoded)
+
+print(decoded == text)
+# [72, 101, 108, 108, 111, 32, 119, 111, 114, 108, 100, 33, 32, 84, 104, 105, 115, 32, 105, 115, 32, 71, 80, 84, 46]
+# Hello world! This is GPT.
+# True
+
