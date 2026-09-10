@@ -226,6 +226,10 @@ tokenizer.save(
 
 print("Tokenizer saved to tokenizer.json")
 
+# tokenizer.load(
+#    BASE_DIR /  "tokenizer.json"
+# )
+
 print(
     "learned merges:",
     len(tokenizer.merges)
@@ -296,4 +300,17 @@ for text in test_strings:
     )
 
 print("All tokenizer round-trip tests passed!")
+
+
+raw_bytes = len(text.encode("utf-8"))
+token_count = len(tokenizer.encode(text))
+
+print("raw bytes:", raw_bytes)
+print("tokens:", token_count)
+print("bytes/token:", raw_bytes / token_count)
+
+# raw bytes: 44
+# tokens: 26
+# bytes/token: 1.6923076923076923
+
 
