@@ -272,3 +272,28 @@ print(
 )
 
 # Hello GPT!
+
+
+test_strings = [
+    "",
+    "hello world",
+    "Hello, GPT!",
+    "123456789",
+    "new\nline",
+    "tabs\ttoo",
+    "Unicode: café",
+    "Emoji: 🚀🔥",
+    "The quick brown fox jumps over the lazy dog."
+]
+
+for text in test_strings:
+
+    ids = tokenizer.encode(text)
+    decoded = tokenizer.decode(ids)
+
+    assert decoded == text, (
+        f"round-trip failed: {text!r}"
+    )
+
+print("All tokenizer round-trip tests passed!")
+
