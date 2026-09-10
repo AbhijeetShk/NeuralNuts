@@ -314,3 +314,46 @@ print("bytes/token:", raw_bytes / token_count)
 # bytes/token: 1.6923076923076923
 
 
+samples = [
+    "こんにちは",
+    "你好",
+    "नमस्ते",
+    "🚀🔥🧠",
+    "café résumé naïve"
+]
+
+for text in samples:
+
+    ids = tokenizer.encode(text)
+    decoded = tokenizer.decode(ids)
+
+    print(text)
+    print(ids)
+    print(decoded)
+    print(text == decoded)
+    print()
+    
+# こんにちは
+# [227, 129, 147, 227, 130, 147, 227, 129, 171, 227, 129, 161, 227, 129, 175]
+# こんにちは
+# True
+
+# 你好
+# [228, 189, 160, 229, 165, 189]
+# 你好
+# True
+
+# नमस्ते
+# [224, 164, 168, 224, 164, 174, 224, 164, 184, 224, 165, 141, 224, 164, 164, 224, 165, 135]
+# नमस्ते
+# True
+
+# 🚀🔥🧠
+# [240, 159, 154, 128, 240, 159, 148, 165, 240, 159, 167, 160]
+# 🚀🔥🧠
+# True
+
+# café résumé naïve
+# [454, 102, 195, 169, 32, 114, 195, 169, 489, 109, 195, 169, 32, 110, 97, 195, 175, 118, 101]
+# café résumé naïve
+# True
