@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -124,54 +125,113 @@ class BPETokenizer:
                 + self.vocab[pair[1]]
             )
 
-# with open(BASE_DIR / "input.txt", "r", encoding="utf-8") as f:
-#     text = f.read()
+    
+    def encode(self, text):
 
-# tokenizer = BPETokenizer()
+        ids = list(text.encode("utf-8"))
 
-# tokenizer.train(
-#     text,
-#     vocab_size=512
-# )
+        while len(ids) >= 2:
 
-# print(
-#     "learned merges:",
-#     len(tokenizer.merges)
-# )
-# learned merges: 256
+            stats = get_stats(ids)
 
+            pairs = [
+                pair
+                for pair in stats
+                if pair in self.merges
+            ]
 
-def encode(self, text):
+            if not pairs:
+                break
 
-    ids = list(text.encode("utf-8"))
+            pair = min(
+                pairs,
+                key=lambda p: self.merges[p]
+            )
 
-    while len(ids) >= 2:
+            idx = self.merges[pair]
 
-        stats = get_stats(ids)
+            ids = merge(
+                ids,
+                pair,
+                idx
+            )
 
-        pairs = [
-            pair
-            for pair in stats
-            if pair in self.merges
+        return ids
+
+    def decode(self, ids):
+
+        tokens = [
+            self.vocab[idx]
+            for idx in ids
         ]
 
-        if not pairs:
-            break
+        text_bytes = b"".join(tokens)
 
-        pair = min(
-            pairs,
-            key=lambda p: self.merges[p]
+        return text_bytes.decode(
+            "utf-8",
+            errors="replace"
         )
 
-        idx = self.merges[pair]
+    def save(self, path):
 
-        ids = merge(
-            ids,
-            pair,
-            idx
-        )
+        data = {
+            "merges": [
+                [list(pair), idx]
+                for pair, idx in self.merges.items()
+            ]
+        }
 
-    return ids
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+
+    def load(self, path):
+
+        with open(path, "r") as f:
+            data = json.load(f)
+
+        self.merges = {
+            tuple(pair): idx
+            for pair, idx in data["merges"]
+        }
+
+        self.vocab = {
+            i: bytes([i])
+            for i in range(256)
+        }
+
+        for pair, idx in self.merges.items():
+
+            self.vocab[idx] = (
+                self.vocab[pair[0]]
+                +
+                self.vocab[pair[1]]
+            )
+
+
+
+with open(BASE_DIR / "input.txt", "r", encoding="utf-8") as f:
+    text = f.read()
+
+tokenizer = BPETokenizer()
+
+tokenizer.train(
+    text,
+    vocab_size=512
+)
+
+tokenizer.save(
+    BASE_DIR / "tokenizer.json"
+)
+
+print("Tokenizer saved to tokenizer.json")
+
+print(
+    "learned merges:",
+    len(tokenizer.merges)
+)
+# learned merges: 256
+
 
 encoded = tokenizer.encode(
     "hello world"
@@ -181,19 +241,6 @@ encoded = tokenizer.encode(
 # [104, 101, 108, 108, 111, 32, 119, 111, 114, 108, 100]
 
 
-def decode(self, ids):
-
-    tokens = [
-        self.vocab[idx]
-        for idx in ids
-    ]
-
-    text_bytes = b"".join(tokens)
-
-    return text_bytes.decode(
-        "utf-8",
-        errors="replace"
-    )
 
 
 text = "Hello world! This is GPT."
@@ -210,3 +257,18 @@ print(decoded == text)
 # Hello world! This is GPT.
 # True
 
+new_tokenizer = BPETokenizer()
+
+new_tokenizer.load(
+   BASE_DIR /  "tokenizer.json"
+)
+
+text = "Hello GPT!"
+
+ids = new_tokenizer.encode(text)
+
+print(
+    new_tokenizer.decode(ids)
+)
+
+# Hello GPT!
