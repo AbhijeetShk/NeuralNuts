@@ -1,5 +1,8 @@
 from pathlib import Path
 import json
+import tiktoken
+import regex as re
+
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -215,20 +218,20 @@ with open(BASE_DIR / "input.txt", "r", encoding="utf-8") as f:
 
 tokenizer = BPETokenizer()
 
-tokenizer.train(
-    text,
-    vocab_size=512
-)
-
-tokenizer.save(
-    BASE_DIR / "tokenizer.json"
-)
-
-print("Tokenizer saved to tokenizer.json")
-
-# tokenizer.load(
-#    BASE_DIR /  "tokenizer.json"
+# tokenizer.train(
+#     text,
+#     vocab_size=512
 # )
+
+# tokenizer.save(
+#     BASE_DIR / "tokenizer.json"
+# )
+
+# print("Tokenizer saved to tokenizer.json")
+
+tokenizer.load(
+   BASE_DIR /  "tokenizer.json"
+)
 
 print(
     "learned merges:",
@@ -357,3 +360,71 @@ for text in samples:
 # [454, 102, 195, 169, 32, 114, 195, 169, 489, 109, 195, 169, 32, 110, 97, 195, 175, 118, 101]
 # café résumé naïve
 # True
+
+
+
+enc = tiktoken.get_encoding("cl100k_base")
+
+text = "hello world!!!? (안녕하세요!) lol123 😉"
+
+ids = enc.encode(text)
+
+print(ids)
+print(tokenizer.encode(text))
+
+assert tokenizer.encode(text) == ids
+assert tokenizer.decode(ids) == text
+
+GPT4_SPLIT_PATTERN = (
+    r"""'(?i:[sdmt]|ll|ve|re)|"""
+    r"""[^\r\n\p{L}\p{N}]?+\p{L}+|"""
+    r"""\p{N}{1,3}|"""
+    r""" ?[^\s\p{L}\p{N}]++[\r\n]*|"""
+    r"""\s*[\r\n]|"""
+    r"""\s+(?!\S)|"""
+    r"""\s+"""
+)
+
+class RegexTokenizer(BPETokenizer):
+
+    def __init__(self, pattern=GPT4_SPLIT_PATTERN):
+        super().__init__()
+        self.pattern = pattern
+        
+        
+def encode(self, text):
+    text_chunks = re.findall(self.pattern, text)
+
+    ids = []
+
+    for chunk in text_chunks:
+        chunk_ids = list(chunk.encode("utf-8"))
+
+        while len(chunk_ids) >= 2:
+            stats = get_stats(chunk_ids)
+
+            pairs = [
+                pair
+                for pair in stats
+                if pair in self.merges
+            ]
+
+            if not pairs:
+                break
+
+            pair = min(
+                pairs,
+                key=lambda p: self.merges[p]
+            )
+
+            idx = self.merges[pair]
+
+            chunk_ids = merge(
+                chunk_ids,
+                pair,
+                idx
+            )
+
+        ids.extend(chunk_ids)
+
+    return ids
