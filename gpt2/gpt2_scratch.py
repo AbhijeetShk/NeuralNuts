@@ -27,3 +27,41 @@ print("Attention QKV:", block.attn.c_attn.weight.shape)
 print("Attention output:", block.attn.c_proj.weight.shape)
 print("MLP first layer:", block.mlp.c_fc.weight.shape)
 print("MLP second layer:", block.mlp.c_proj.weight.shape)
+
+
+class GPT2Embeddings(nn.Module):
+    def __init__(self, vocab_size, block_size, n_embd):
+        super().__init__()
+
+        self.wte = nn.Embedding(vocab_size, n_embd)
+        self.wpe = nn.Embedding(block_size, n_embd)
+
+    def forward(self, idx):
+        B, T = idx.shape
+
+        positions = torch.arange(
+            T,
+            device=idx.device
+        )
+
+        tok_emb = self.wte(idx)
+        pos_emb = self.wpe(positions)
+
+        return tok_emb + pos_emb
+    
+embeddings = GPT2Embeddings(
+    vocab_size=config.vocab_size,
+    block_size=config.n_positions,
+    n_embd=config.n_embd,
+)
+
+idx = torch.randint(
+    0,
+    config.vocab_size,
+    (2, 8),
+)
+
+x = embeddings(idx)
+
+print("input shape :", idx.shape)
+print("output shape:", x.shape)
