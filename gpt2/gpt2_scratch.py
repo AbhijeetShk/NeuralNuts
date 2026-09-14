@@ -65,3 +65,33 @@ x = embeddings(idx)
 
 print("input shape :", idx.shape)
 print("output shape:", x.shape)
+
+class LayerNorm(nn.Module):
+    def __init__(self, ndim, bias=True):
+        super().__init__()
+
+        self.weight = nn.Parameter(torch.ones(ndim))
+
+        if bias:
+            self.bias = nn.Parameter(torch.zeros(ndim))
+        else:
+            self.bias = None
+
+    def forward(self, x):
+        return F.layer_norm(
+            x,
+            self.weight.shape,
+            self.weight,
+            self.bias,
+            1e-5,
+        )
+        
+ln = LayerNorm(config.n_embd)
+
+x = torch.randn(2, 8, config.n_embd)
+y = ln(x)
+
+print("input :", x.shape)
+print("output:", y.shape)
+print("mean  :", y.mean().item())
+print("std   :", y.std().item())
