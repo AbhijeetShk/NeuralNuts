@@ -1,5 +1,6 @@
 import torch
 from transformers import GPT2LMHeadModel
+import math
 
 torch.manual_seed(1337)
 
@@ -95,3 +96,89 @@ print("input :", x.shape)
 print("output:", y.shape)
 print("mean  :", y.mean().item())
 print("std   :", y.std().item())
+
+
+class CausalSelfAttention(nn.Module):
+    def __init__(self, n_embd, n_head, block_size, dropout=0.0):
+        super().__init__()
+
+        assert n_embd % n_head == 0
+
+        self.n_head = n_head
+        self.n_embd = n_embd
+        self.head_dim = n_embd // n_head
+
+        # GPT-2 combines Q, K and V projections.
+        self.c_attn = nn.Linear(
+            n_embd,
+            3 * n_embd
+        )
+
+        self.c_proj = nn.Linear(
+            n_embd,
+            n_embd
+        )
+
+        self.attn_dropout = nn.Dropout(dropout)
+        self.resid_dropout = nn.Dropout(dropout)
+
+        # Causal mask.
+        mask = torch.tril(
+            torch.ones(block_size, block_size)
+        )
+
+        self.register_buffer(
+            "bias",
+            mask.view(1, 1, block_size, block_size)
+        )
+
+    def forward(self, x):
+        B, T, C = x.shape
+
+        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
+
+        # [B, T, C] -> [B, n_head, T, head_dim]
+        q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+        k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+        v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+
+        # Attention scores.
+        att = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+
+        # preventing attending to future tokens.
+        att = att.masked_fill(
+            self.bias[:, :, :T, :T] == 0,
+            float("-inf")
+        )
+
+        att = F.softmax(att, dim=-1)
+        att = self.attn_dropout(att)
+
+        # weighted combination of values.
+        y = att @ v
+
+        # [B, n_head, T, head_dim]
+        # -> [B, T, n_head, head_dim]
+        y = y.transpose(1, 2).contiguous()
+
+        # merge heads.
+        y = y.view(B, T, C)
+
+        # output projection.
+        y = self.c_proj(y)
+        y = self.resid_dropout(y)
+
+        return y
+    
+attention = CausalSelfAttention(
+    n_embd=config.n_embd,
+    n_head=config.n_head,
+    block_size=config.n_positions,
+)
+
+x = torch.randn(2, 8, config.n_embd)
+
+y = attention(x)
+
+print("input :", x.shape)
+print("output:", y.shape)
