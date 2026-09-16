@@ -182,3 +182,44 @@ y = attention(x)
 
 print("input :", x.shape)
 print("output:", y.shape)
+
+
+class GPT2MLP(nn.Module):
+    def __init__(self, n_embd, dropout=0.0):
+        super().__init__()
+
+        self.c_fc = nn.Linear(
+            n_embd,
+            4 * n_embd
+        )
+
+        self.c_proj = nn.Linear(
+            4 * n_embd,
+            n_embd
+        )
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        x = self.c_fc(x)
+        x = F.gelu(x)
+        x = self.c_proj(x)
+        x = self.dropout(x)
+
+        return x
+    
+    
+mlp = GPT2MLP(
+    n_embd=config.n_embd
+)
+
+x = torch.randn(
+    2,
+    8,
+    config.n_embd
+)
+
+y = mlp(x)
+
+print("input :", x.shape)
+print("output:", y.shape)
