@@ -223,3 +223,58 @@ y = mlp(x)
 
 print("input :", x.shape)
 print("output:", y.shape)
+
+
+class GPT2Block(nn.Module):
+    def __init__(
+        self,
+        n_embd,
+        n_head,
+        block_size,
+        dropout=0.0,
+    ):
+        super().__init__()
+
+        self.ln_1 = LayerNorm(n_embd)
+
+        self.attn = CausalSelfAttention(
+            n_embd=n_embd,
+            n_head=n_head,
+            block_size=block_size,
+            dropout=dropout,
+        )
+
+        self.ln_2 = LayerNorm(n_embd)
+
+        self.mlp = GPT2MLP(
+            n_embd=n_embd,
+            dropout=dropout,
+        )
+
+    def forward(self, x):
+        x = x + self.attn(self.ln_1(x))
+        x = x + self.mlp(self.ln_2(x))
+
+        return x
+    
+    
+block = GPT2Block(
+    n_embd=config.n_embd,
+    n_head=config.n_head,
+    block_size=config.n_positions,
+)
+
+x = torch.randn(
+    2,
+    8,
+    config.n_embd,
+)
+
+y = block(x)
+
+print("input :", x.shape)
+print("output:", y.shape)
+
+
+for name, param in block.named_parameters():
+    print(f"{name:30s} {tuple(param.shape)}")
