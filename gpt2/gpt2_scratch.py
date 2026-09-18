@@ -278,3 +278,149 @@ print("output:", y.shape)
 
 for name, param in block.named_parameters():
     print(f"{name:30s} {tuple(param.shape)}")
+    
+    
+class GPT2(nn.Module):
+    def __init__(
+        self,
+        vocab_size,
+        block_size,
+        n_layer,
+        n_head,
+        n_embd,
+        dropout=0.0,
+    ):
+        super().__init__()
+
+        self.block_size = block_size
+
+        self.transformer = nn.ModuleDict({
+            "wte": nn.Embedding(vocab_size, n_embd),
+            "wpe": nn.Embedding(block_size, n_embd),
+            "h": nn.ModuleList([
+                GPT2Block(
+                    n_embd=n_embd,
+                    n_head=n_head,
+                    block_size=block_size,
+                    dropout=dropout,
+                )
+                for _ in range(n_layer)
+            ]),
+            "ln_f": LayerNorm(n_embd),
+        })
+
+        self.lm_head = nn.Linear(
+            n_embd,
+            vocab_size,
+            bias=False,
+        )
+
+        # GPT-2 ties token embeddings and output projection weights.
+        self.lm_head.weight = self.transformer["wte"].weight
+
+    def forward(self, idx):
+        B, T = idx.shape
+
+        assert T <= self.block_size, (
+            f"sequence length {T} exceeds block size "
+            f"{self.block_size}"
+        )
+
+        tok_emb = self.transformer["wte"](idx)
+
+        pos = torch.arange(
+            T,
+            device=idx.device,
+        )
+
+        pos_emb = self.transformer["wpe"](pos)
+
+        x = tok_emb + pos_emb
+
+        for block in self.transformer["h"]:
+            x = block(x)
+
+        x = self.transformer["ln_f"](x)
+
+        logits = self.lm_head(x)
+
+        return logits
+    
+class GPT2(nn.Module):
+    def __init__(
+        self,
+        vocab_size,
+        block_size,
+        n_layer,
+        n_head,
+        n_embd,
+        dropout=0.0,
+    ):
+        super().__init__()
+
+        self.block_size = block_size
+
+        self.transformer = nn.ModuleDict({
+            "wte": nn.Embedding(vocab_size, n_embd),
+            "wpe": nn.Embedding(block_size, n_embd),
+            "h": nn.ModuleList([
+                GPT2Block(
+                    n_embd=n_embd,
+                    n_head=n_head,
+                    block_size=block_size,
+                    dropout=dropout,
+                )
+                for _ in range(n_layer)
+            ]),
+            "ln_f": LayerNorm(n_embd),
+        })
+
+        self.lm_head = nn.Linear(
+            n_embd,
+            vocab_size,
+            bias=False,
+        )
+
+        # GPT-2 ties token embeddings and output projection weights.
+        self.lm_head.weight = self.transformer["wte"].weight
+
+    def forward(self, idx):
+        B, T = idx.shape
+
+        assert T <= self.block_size, (
+            f"sequence length {T} exceeds block size "
+            f"{self.block_size}"
+        )
+
+        tok_emb = self.transformer["wte"](idx)
+
+        pos = torch.arange(
+            T,
+            device=idx.device,
+        )
+
+        pos_emb = self.transformer["wpe"](pos)
+
+        x = tok_emb + pos_emb
+
+        for block in self.transformer["h"]:
+            x = block(x)
+
+        x = self.transformer["ln_f"](x)
+
+        logits = self.lm_head(x)
+
+        return logits
+    
+num_params = sum(
+    p.numel()
+    for p in model.parameters()
+)
+
+print(f"parameters: {num_params:,}")
+print(f"parameters: {num_params / 1e6:.2f}M")
+
+print(
+    model.transformer["wte"].weight
+    is model.lm_head.weight
+)
