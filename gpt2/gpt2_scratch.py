@@ -1,5 +1,5 @@
 import torch
-from transformers import GPT2LMHeadModel
+from transformers import GPT2LMHeadModel, GPT2TokenizerFast
 import math
 
 torch.manual_seed(1337)
@@ -424,3 +424,29 @@ print(
     model.transformer["wte"].weight
     is model.lm_head.weight
 )
+
+
+tokenizer = GPT2TokenizerFast.from_pretrained(
+    "openai-community/gpt2"
+)
+
+print("vocab size:", tokenizer.vocab_size)
+
+text = "Hello, my name is Abhijeet."
+
+tokens = tokenizer.encode(text)
+
+print("token ids:", tokens)
+print("decoded:", tokenizer.decode(tokens))
+
+idx = torch.tensor(
+    [tokens],
+    dtype=torch.long,
+)
+
+print("input shape:", idx.shape)
+
+with torch.no_grad():
+    logits = model(idx)
+
+print("logits shape:", logits.shape)
