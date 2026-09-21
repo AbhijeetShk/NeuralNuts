@@ -450,3 +450,227 @@ with torch.no_grad():
     logits = model(idx)
 
 print("logits shape:", logits.shape)
+
+reference_model = GPT2LMHeadModel.from_pretrained(
+    "openai-community/gpt2"
+)
+
+def load_gpt2_weights(model, reference_model):
+    with torch.no_grad():
+
+        # Token and positional embeddings
+        model.transformer["wte"].weight.copy_(
+            reference_model.transformer.wte.weight
+        )
+
+        model.transformer["wpe"].weight.copy_(
+            reference_model.transformer.wpe.weight
+        )
+
+        # Transformer BLOCKS
+        for i, block in enumerate(model.transformer["h"]):
+
+            ref_block = reference_model.transformer.h[i]
+
+            # LayerNorm 1
+            block.ln_1.weight.copy_(
+                ref_block.ln_1.weight
+            )
+
+            block.ln_1.bias.copy_(
+                ref_block.ln_1.bias
+            )
+
+            # attention QKV
+            block.attn.c_attn.weight.copy_(
+                ref_block.attn.c_attn.weight.T
+            )
+
+            block.attn.c_attn.bias.copy_(
+                ref_block.attn.c_attn.bias
+            )
+
+            # attention output projection
+            block.attn.c_proj.weight.copy_(
+                ref_block.attn.c_proj.weight.T
+            )
+
+            block.attn.c_proj.bias.copy_(
+                ref_block.attn.c_proj.bias
+            )
+
+            # LayerNorm 2
+            block.ln_2.weight.copy_(
+                ref_block.ln_2.weight
+            )
+
+            block.ln_2.bias.copy_(
+                ref_block.ln_2.bias
+            )
+
+            # MLP input projection
+            block.mlp.c_fc.weight.copy_(
+                ref_block.mlp.c_fc.weight.T
+            )
+
+            block.mlp.c_fc.bias.copy_(
+                ref_block.mlp.c_fc.bias
+            )
+
+            # MLP output projection
+            block.mlp.c_proj.weight.copy_(
+                ref_block.mlp.c_proj.weight.T
+            )
+
+            block.mlp.c_proj.bias.copy_(
+                ref_block.mlp.c_proj.bias
+            )
+
+        # last LayerNorm
+        model.transformer["ln_f"].weight.copy_(
+            reference_model.transformer.ln_f.weight
+        )
+
+        model.transformer["ln_f"].bias.copy_(
+            reference_model.transformer.ln_f.bias
+        )
+
+    return model
+
+
+model = GPT2(
+    vocab_size=config.vocab_size,
+    block_size=config.n_positions,
+    n_layer=config.n_layer,
+    n_head=config.n_head,
+    n_embd=config.n_embd,
+)
+
+
+load_gpt2_weights(
+    model,
+    reference_model,
+)
+
+print(
+    torch.equal(
+        model.transformer["wte"].weight,
+        reference_model.transformer.wte.weight,
+    )
+)
+
+print(
+    torch.equal(
+        model.transformer["ln_f"].weight,
+        reference_model.transformer.ln_f.weight,
+    )
+)
+
+print(
+    torch.equal(
+        model.transformer["h"][0].attn.c_attn.weight,
+        reference_model.transformer.h[0].attn.c_attn.weight.T,
+    )
+)
+
+num_params = sum(
+    p.numel()
+    for p in model.parameters()
+)
+
+print(f"{num_params:,}")
+print(f"{num_params / 1e6:.2f}M")
+
+
+text = "The quick brown fox jumps over the lazy dog."
+
+tokens = tokenizer.encode(text)
+
+idx = torch.tensor(
+    [tokens],
+    dtype=torch.long,
+)
+
+
+
+reference_model.eval()
+model.eval()
+
+with torch.no_grad():
+    reference_logits = reference_model(idx).logits
+    our_logits = model(idx)
+    
+    
+print("reference:", reference_logits.shape)
+print("ours     :", our_logits.shape)
+
+max_diff = (
+    reference_logits - our_logits
+).abs().max()
+
+print("max absolute difference:", max_diff.item())
+
+mean_diff = (
+    reference_logits - our_logits
+).abs().mean()
+
+print("mean absolute difference:", mean_diff.item())
+
+
+reference_next = torch.argmax(
+    reference_logits[:, -1, :],
+    dim=-1,
+)
+
+our_next = torch.argmax(
+    our_logits[:, -1, :],
+    dim=-1,
+)
+
+print("reference token:", reference_next.item())
+print("our token      :", our_next.item())
+
+print(
+    "reference:",
+    tokenizer.decode(reference_next.tolist())
+)
+
+print(
+    "ours     :",
+    tokenizer.decode(our_next.tolist())
+)
+
+
+k = 10
+
+reference_top = torch.topk(
+    reference_logits[:, -1, :],
+    k=k,
+    dim=-1,
+)
+
+our_top = torch.topk(
+    our_logits[:, -1, :],
+    k=k,
+    dim=-1,
+)
+
+print("Reference:")
+for token_id, score in zip(
+    reference_top.indices[0],
+    reference_top.values[0],
+):
+    print(
+        repr(tokenizer.decode([token_id.item()])),
+        score.item(),
+    )
+
+print("\nOurs:")
+for token_id, score in zip(
+    our_top.indices[0],
+    our_top.values[0],
+):
+    print(
+        repr(tokenizer.decode([token_id.item()])),
+        score.item(),
+    )
