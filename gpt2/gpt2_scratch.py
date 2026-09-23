@@ -31,6 +31,16 @@ print("Attention output:", block.attn.c_proj.weight.shape)
 print("MLP first layer:", block.mlp.c_fc.weight.shape)
 print("MLP second layer:", block.mlp.c_proj.weight.shape)
 
+def get_device(): 
+        if torch.cuda.is_available(): 
+            return torch.device("cuda") 
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return torch.device("mps") 
+        return torch.device("cpu")
+
+
+device = get_device()
+print("device:", device)
 
 class GPT2Embeddings(nn.Module):
     def __init__(self, vocab_size, block_size, n_embd):
@@ -629,9 +639,10 @@ idx = torch.tensor(
 )
 
 
-
-reference_model.eval()
+model = model.to(device)
 model.eval()
+reference_model = reference_model.to(device)
+reference_model.eval()
 
 with torch.no_grad():
     reference_logits = reference_model(idx).logits
@@ -736,10 +747,11 @@ print(text)
 
 #After adding topK
 prompt = "The future of artificial intelligence"
-
+torch.manual_seed(42)
 idx = torch.tensor(
     [tokenizer.encode(prompt)],
     dtype=torch.long,
+    device=device,
 )
 
 generated = model.generate(
@@ -753,3 +765,7 @@ print(
         generated[0].tolist()
     )
 )
+
+print("device:", device)
+print("model:", next(model.parameters()).device)
+print("input:", idx.device)
