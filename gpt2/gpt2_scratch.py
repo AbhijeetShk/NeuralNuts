@@ -1,6 +1,8 @@
 import torch
 from transformers import GPT2LMHeadModel, GPT2TokenizerFast
 import math
+import torch.nn as nn
+import torch.nn.functional as F
 
 torch.manual_seed(1337)
 
@@ -412,6 +414,41 @@ class GPT2(nn.Module):
 
         return logits
     
+    @torch.no_grad()
+    def generate(self, idx, max_new_tokens, top_k=50):
+        for _ in range(max_new_tokens):
+            idx_cond = idx[:, -self.block_size:]
+    
+            logits = self(idx_cond)
+    
+            logits = logits[:, -1, :]
+            
+            probs = F.softmax(logits, dim=-1)
+            
+            topk_probs, topk_indices = torch.topk(
+                probs,
+                top_k,
+                dim=-1,
+            )
+
+            ix = torch.multinomial(
+                topk_probs,
+                num_samples=1,
+            )
+
+            next_token = torch.gather(
+                topk_indices,
+                -1,
+                ix,
+            )
+
+            idx = torch.cat(
+                (idx, next_token),
+                dim=1,
+            )
+    
+        return idx
+    
 num_params = sum(
     p.numel()
     for p in model.parameters()
@@ -674,3 +711,45 @@ for token_id, score in zip(
         repr(tokenizer.decode([token_id.item()])),
         score.item(),
     )
+    
+    
+prompt = "The future of artificial intelligence"
+
+tokens = tokenizer.encode(prompt)
+
+idx = torch.tensor(
+    [tokens],
+    dtype=torch.long,
+)
+
+generated = model.generate(
+    idx,
+    max_new_tokens=50,
+)
+
+text = tokenizer.decode(
+    generated[0].tolist()
+)
+
+print(text)
+
+
+#After adding topK
+prompt = "The future of artificial intelligence"
+
+idx = torch.tensor(
+    [tokenizer.encode(prompt)],
+    dtype=torch.long,
+)
+
+generated = model.generate(
+    idx,
+    max_new_tokens=50,
+    top_k=50,
+)
+
+print(
+    tokenizer.decode(
+        generated[0].tolist()
+    )
+)
