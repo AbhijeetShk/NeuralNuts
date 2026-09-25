@@ -769,3 +769,75 @@ print(
 print("device:", device)
 print("model:", next(model.parameters()).device)
 print("input:", idx.device)
+
+
+
+def get_batch(tokens, batch_size, block_size, device):
+    max_start = len(tokens) - block_size - 1
+
+    ix = torch.randint(
+        max_start,
+        (batch_size,),
+    )
+
+    x = torch.stack([
+        tokens[i:i + block_size]
+        for i in ix
+    ])
+
+    y = torch.stack([
+        tokens[i + 1:i + block_size + 1]
+        for i in ix
+    ])
+
+    return x.to(device), y.to(device)
+
+
+model = GPT2(
+    vocab_size=config.vocab_size,
+    block_size=config.n_positions,
+    n_layer=config.n_layer,
+    n_head=config.n_head,
+    n_embd=config.n_embd,
+)
+
+load_gpt2_weights(model, reference_model)
+
+model = model.to(device)
+model.eval()
+
+tokenizer = GPT2TokenizerFast.from_pretrained(
+"openai-community/gpt2"
+)
+
+
+text = """
+The future of artificial intelligence is uncertain.
+Large language models learn statistical patterns from text.
+Transformers use attention to model relationships between tokens.
+"""
+
+encoded = tokenizer.encode(text)
+
+tokens = torch.tensor(
+    encoded,
+    dtype=torch.long,
+)
+
+
+x, y = get_batch(
+    tokens,
+    batch_size=4,
+    block_size=16,
+    device=device,
+)
+
+print(x.shape)
+print(y.shape)
+
+logits = model(x)
+
+print(logits.shape) #At each of 4 x 16 posn it produces 50257 scores. So total logit values = 4×16×50257
+
+print(tokenizer.decode(x[0].tolist()))
+print(tokenizer.decode(y[0].tolist()))
