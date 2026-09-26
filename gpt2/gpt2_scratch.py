@@ -916,6 +916,71 @@ with torch.no_grad():
 print("ours:", our_logits.shape)
 
 
+class DataLoaderLite:
+    def __init__(self, B, T, tokenizer, text):
+        self.B = B
+        self.T = T
+        self.tokenizer = tokenizer
+
+        self.tokens = torch.tensor(
+            tokenizer.encode(text),
+            dtype=torch.long,
+        )
+
+        self.current_position = 0
+
+    def next_batch(self):
+        B, T = self.B, self.T
+
+        buf = self.tokens[
+            self.current_position:
+            self.current_position + B * T + 1
+        ]
+
+        x = buf[:-1].view(B, T)
+        y = buf[1:].view(B, T)
+
+        self.current_position += B * T
+
+        if self.current_position + B * T + 1 > len(self.tokens):
+            self.current_position = 0
+
+        return x.to(device), y.to(device)
+    
+
+train_text = """
+The future of artificial intelligence is uncertain.
+Artificial intelligence systems learn patterns from data.
+Language models predict the next token given previous tokens.
+Transformers use attention to process sequences of tokens.
+Deep learning models improve through optimization.
+""" * 100
+
+
+B = 4
+T = 16
+
+train_loader = DataLoaderLite(
+    B=B,
+    T=T,
+    tokenizer=tokenizer,
+    text=train_text,
+)
+
+x, y = train_loader.next_batch()
+
+print("x:", x.shape)
+print("y:", y.shape)
+print("x:")
+print(x)
+
+print("y:")
+print(y)
+
+print(torch.equal(x[:, 1:], y[:, :-1]))
+
+
+
 optimizer = torch.optim.AdamW(
     model.parameters(),
     lr=1e-4,
@@ -923,7 +988,9 @@ optimizer = torch.optim.AdamW(
 
 model.train()
 
-for step in range(50):
+for step in range(20):
+    x, y = train_loader.next_batch() #instead of roll using next_batch func
+    
     optimizer.zero_grad(set_to_none=True)
 
     logits, loss = model(x, y)
@@ -942,3 +1009,4 @@ with torch.no_grad():
     logits, loss = model(x, y)
 
 print("final loss:", loss.item())
+
