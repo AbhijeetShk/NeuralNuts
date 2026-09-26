@@ -396,7 +396,7 @@ class GPT2(nn.Module):
         # GPT-2 ties token embeddings and output projection weights.
         self.lm_head.weight = self.transformer["wte"].weight
 
-    def forward(self, idx):
+    def forward(self, idx, targets=None):
         B, T = idx.shape
 
         assert T <= self.block_size, (
@@ -421,15 +421,23 @@ class GPT2(nn.Module):
         x = self.transformer["ln_f"](x)
 
         logits = self.lm_head(x)
+        
+        if targets is not None:
+            loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                targets.view(-1),
+            )
+        else:
+            loss = None
 
-        return logits
-    
+        return logits, loss
+
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, top_k=50):
         for _ in range(max_new_tokens):
             idx_cond = idx[:, -self.block_size:]
     
-            logits = self(idx_cond)
+            logits, _ = self(idx_cond)
     
             logits = logits[:, -1, :]
             
@@ -458,7 +466,27 @@ class GPT2(nn.Module):
             )
     
         return idx
-    
+
+model = GPT2(
+    vocab_size=config.vocab_size,
+    block_size=config.n_positions,
+    n_layer=config.n_layer,
+    n_head=config.n_head,
+    n_embd=config.n_embd,
+)
+
+idx = torch.randint(
+    0,
+    config.vocab_size,
+    (2, 16),
+)
+
+logits, loss = model(idx)
+
+print("input :", idx.shape)
+print("logits:", logits.shape)
+print("loss:", loss.item() if loss is not None else None)
+
 num_params = sum(
     p.numel()
     for p in model.parameters()
@@ -471,7 +499,7 @@ print(
     model.transformer["wte"].weight
     is model.lm_head.weight
 )
-
+# print(model.transformer.wte.weight is model.lm_head.weight) #model.transformer is Hugging Face’s GPT2Model, which exposes wte as an attribute, not a dictionary key. 
 
 tokenizer = GPT2TokenizerFast.from_pretrained(
     "openai-community/gpt2"
@@ -494,7 +522,7 @@ idx = torch.tensor(
 print("input shape:", idx.shape)
 
 with torch.no_grad():
-    logits = model(idx)
+    logits, _ = model(idx)
 
 print("logits shape:", logits.shape)
 
@@ -639,27 +667,47 @@ idx = torch.tensor(
 )
 
 
-model = model.to(device)
-model.eval()
-reference_model = reference_model.to(device)
+reference_model = GPT2LMHeadModel.from_pretrained(
+    "openai-community/gpt2"
+)
 reference_model.eval()
 
+model = model.to(device)
+model.eval()
+
+idx_cpu = idx
+idx_device = idx.to(device)
+
+print("reference device:", next(reference_model.parameters()).device)
+print("our model device:", next(model.parameters()).device)
+print("input device:", idx_device.device)
+
 with torch.no_grad():
-    reference_logits = reference_model(idx).logits
-    our_logits = model(idx)
+    reference_logits = reference_model(idx_cpu).logits
+    our_logits, _ = model(idx_device)
+
+our_logits_cpu = our_logits.cpu()
+
+print("reference:", reference_logits.shape)
+print("ours     :", our_logits_cpu.shape)
+
+diff = (reference_logits - our_logits_cpu).abs()
+
+print("max diff :", diff.max().item())
+print("mean diff:", diff.mean().item())
     
     
 print("reference:", reference_logits.shape)
 print("ours     :", our_logits.shape)
 
 max_diff = (
-    reference_logits - our_logits
+    reference_logits - our_logits_cpu
 ).abs().max()
 
 print("max absolute difference:", max_diff.item())
 
 mean_diff = (
-    reference_logits - our_logits
+    reference_logits - our_logits_cpu
 ).abs().mean()
 
 print("mean absolute difference:", mean_diff.item())
@@ -723,7 +771,8 @@ for token_id, score in zip(
         score.item(),
     )
     
-    
+print(config.activation_function)
+
 prompt = "The future of artificial intelligence"
 
 tokens = tokenizer.encode(prompt)
@@ -731,6 +780,7 @@ tokens = tokenizer.encode(prompt)
 idx = torch.tensor(
     [tokens],
     dtype=torch.long,
+    device=device
 )
 
 generated = model.generate(
@@ -835,9 +885,32 @@ x, y = get_batch(
 print(x.shape)
 print(y.shape)
 
-logits = model(x)
+logits, loss = model(x)
 
 print(logits.shape) #At each of 4 x 16 posn it produces 50257 scores. So total logit values = 4×16×50257
 
 print(tokenizer.decode(x[0].tolist()))
 print(tokenizer.decode(y[0].tolist()))
+
+model = GPT2(
+    vocab_size=config.vocab_size,
+    block_size=config.n_positions,
+    n_layer=config.n_layer,
+    n_head=config.n_head,
+    n_embd=config.n_embd,
+)
+
+load_gpt2_weights(model, reference_model)
+
+model = model.to(device)
+model.eval()
+
+idx = idx.cpu().to(device)
+
+print("model device:", next(model.parameters()).device)
+print("idx device:", idx.device)
+
+with torch.no_grad():
+    our_logits, _ = model(idx)
+
+print("ours:", our_logits.shape)
