@@ -914,3 +914,31 @@ with torch.no_grad():
     our_logits, _ = model(idx)
 
 print("ours:", our_logits.shape)
+
+
+optimizer = torch.optim.AdamW(
+    model.parameters(),
+    lr=1e-4,
+)
+
+model.train()
+
+for step in range(50):
+    optimizer.zero_grad(set_to_none=True)
+
+    logits, loss = model(x, y)
+
+    loss.backward()
+
+    optimizer.step()
+
+    if step % 5 == 0:
+        print(f"step {step:02d} | loss {loss.item():.4f}")
+        
+        
+model.eval()
+
+with torch.no_grad():
+    logits, loss = model(x, y)
+
+print("final loss:", loss.item())
