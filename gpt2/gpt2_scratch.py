@@ -1010,3 +1010,9 @@ with torch.no_grad():
 
 print("final loss:", loss.item())
 
+
+print(
+    "tied embeddings:",
+    model.transformer["wte"].weight.data_ptr()
+    == model.lm_head.weight.data_ptr()
+)
