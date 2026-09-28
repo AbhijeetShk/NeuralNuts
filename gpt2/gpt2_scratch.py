@@ -292,71 +292,71 @@ for name, param in block.named_parameters():
     print(f"{name:30s} {tuple(param.shape)}")
     
     
-class GPT2(nn.Module):
-    def __init__(
-        self,
-        vocab_size,
-        block_size,
-        n_layer,
-        n_head,
-        n_embd,
-        dropout=0.0,
-    ):
-        super().__init__()
+# class GPT2(nn.Module):
+#     def __init__(
+#         self,
+#         vocab_size,
+#         block_size,
+#         n_layer,
+#         n_head,
+#         n_embd,
+#         dropout=0.0,
+#     ):
+#         super().__init__()
 
-        self.block_size = block_size
+#         self.block_size = block_size
 
-        self.transformer = nn.ModuleDict({
-            "wte": nn.Embedding(vocab_size, n_embd),
-            "wpe": nn.Embedding(block_size, n_embd),
-            "h": nn.ModuleList([
-                GPT2Block(
-                    n_embd=n_embd,
-                    n_head=n_head,
-                    block_size=block_size,
-                    dropout=dropout,
-                )
-                for _ in range(n_layer)
-            ]),
-            "ln_f": LayerNorm(n_embd),
-        })
+#         self.transformer = nn.ModuleDict({
+#             "wte": nn.Embedding(vocab_size, n_embd),
+#             "wpe": nn.Embedding(block_size, n_embd),
+#             "h": nn.ModuleList([
+#                 GPT2Block(
+#                     n_embd=n_embd,
+#                     n_head=n_head,
+#                     block_size=block_size,
+#                     dropout=dropout,
+#                 )
+#                 for _ in range(n_layer)
+#             ]),
+#             "ln_f": LayerNorm(n_embd),
+#         })
 
-        self.lm_head = nn.Linear(
-            n_embd,
-            vocab_size,
-            bias=False,
-        )
+#         self.lm_head = nn.Linear(
+#             n_embd,
+#             vocab_size,
+#             bias=False,
+#         )
 
-        # GPT-2 ties token embeddings and output projection weights.
-        self.lm_head.weight = self.transformer["wte"].weight
+#         # GPT-2 ties token embeddings and output projection weights.
+#         self.lm_head.weight = self.transformer["wte"].weight
 
-    def forward(self, idx):
-        B, T = idx.shape
+#     def forward(self, idx):
+#         B, T = idx.shape
 
-        assert T <= self.block_size, (
-            f"sequence length {T} exceeds block size "
-            f"{self.block_size}"
-        )
+#         assert T <= self.block_size, (
+#             f"sequence length {T} exceeds block size "
+#             f"{self.block_size}"
+#         )
 
-        tok_emb = self.transformer["wte"](idx)
+#         tok_emb = self.transformer["wte"](idx)
 
-        pos = torch.arange(
-            T,
-            device=idx.device,
-        )
+#         pos = torch.arange(
+#             T,
+#             device=idx.device,
+#         )
 
-        pos_emb = self.transformer["wpe"](pos)
+#         pos_emb = self.transformer["wpe"](pos)
 
-        x = tok_emb + pos_emb
+#         x = tok_emb + pos_emb
 
-        for block in self.transformer["h"]:
-            x = block(x)
+#         for block in self.transformer["h"]:
+#             x = block(x)
 
-        x = self.transformer["ln_f"](x)
+#         x = self.transformer["ln_f"](x)
 
-        logits = self.lm_head(x)
+#         logits = self.lm_head(x)
 
-        return logits
+#         return logits
     
 class GPT2(nn.Module):
     def __init__(
@@ -393,8 +393,47 @@ class GPT2(nn.Module):
             bias=False,
         )
 
-        # GPT-2 ties token embeddings and output projection weights.
+        # tying token embeddings and output projection weights.
         self.lm_head.weight = self.transformer["wte"].weight
+
+        self.apply(self._init_weights)
+
+        for block in self.transformer["h"]:
+            torch.nn.init.normal_(
+                block.attn.c_proj.weight,
+                mean=0.0,
+                std=0.02 / math.sqrt(2 * n_layer),
+            )
+
+            torch.nn.init.normal_(
+                block.mlp.c_proj.weight,
+                mean=0.0,
+                std=0.02 / math.sqrt(2 * n_layer),
+            )
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(
+                module.weight,
+                mean=0.0,
+                std=0.02,
+            )
+
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(
+                module.weight,
+                mean=0.0,
+                std=0.02,
+            )
+
+        elif isinstance(module, LayerNorm):
+            torch.nn.init.ones_(module.weight)
+
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
@@ -421,7 +460,7 @@ class GPT2(nn.Module):
         x = self.transformer["ln_f"](x)
 
         logits = self.lm_head(x)
-        
+
         if targets is not None:
             loss = F.cross_entropy(
                 logits.view(-1, logits.size(-1)),
@@ -436,13 +475,13 @@ class GPT2(nn.Module):
     def generate(self, idx, max_new_tokens, top_k=50):
         for _ in range(max_new_tokens):
             idx_cond = idx[:, -self.block_size:]
-    
+
             logits, _ = self(idx_cond)
-    
+
             logits = logits[:, -1, :]
-            
+
             probs = F.softmax(logits, dim=-1)
-            
+
             topk_probs, topk_indices = torch.topk(
                 probs,
                 top_k,
@@ -464,7 +503,7 @@ class GPT2(nn.Module):
                 (idx, next_token),
                 dim=1,
             )
-    
+
         return idx
 
 model = GPT2(
@@ -1016,3 +1055,17 @@ print(
     model.transformer["wte"].weight.data_ptr()
     == model.lm_head.weight.data_ptr()
 )
+
+
+test_model = GPT2(
+    vocab_size=config.vocab_size,
+    block_size=config.n_positions,
+    n_layer=config.n_layer,
+    n_head=config.n_head,
+    n_embd=config.n_embd,
+)
+
+print("embedding std :", test_model.transformer["wte"].weight.std().item())
+print("position std  :", test_model.transformer["wpe"].weight.std().item())
+print("attn proj std :", test_model.transformer["h"][0].attn.c_proj.weight.std().item())
+print("mlp proj std  :", test_model.transformer["h"][0].mlp.c_proj.weight.std().item())
