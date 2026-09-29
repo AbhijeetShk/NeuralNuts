@@ -1069,3 +1069,48 @@ print("embedding std :", test_model.transformer["wte"].weight.std().item())
 print("position std  :", test_model.transformer["wpe"].weight.std().item())
 print("attn proj std :", test_model.transformer["h"][0].attn.c_proj.weight.std().item())
 print("mlp proj std  :", test_model.transformer["h"][0].mlp.c_proj.weight.std().item())
+
+
+import time
+
+train_model = GPT2(
+    vocab_size=config.vocab_size,
+    block_size=config.n_positions,
+    n_layer=config.n_layer,
+    n_head=config.n_head,
+    n_embd=config.n_embd,
+).to(device)
+
+optimizer = torch.optim.AdamW(
+    train_model.parameters(),
+    lr=3e-4,
+)
+
+train_model.train()
+
+for step in range(10):
+    x, y = get_batch(
+        tokens,
+        batch_size=4,
+        block_size=16,
+        device=device,
+    )
+
+    start = time.perf_counter()
+
+    logits, loss = train_model(x, y)
+
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
+
+    if device.type == "mps":
+        torch.mps.synchronize()
+
+    elapsed = time.perf_counter() - start
+
+    print(
+        f"step {step:02d} | "
+        f"loss {loss.item():.4f} | "
+        f"{elapsed * 1000:.2f} ms"
+    )
