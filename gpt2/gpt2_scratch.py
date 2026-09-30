@@ -42,6 +42,7 @@ def get_device():
 device = get_device()
 print("device:", device)
 
+
 class GPT2Embeddings(nn.Module):
     def __init__(self, vocab_size, block_size, n_embd):
         super().__init__()
@@ -291,7 +292,7 @@ print("output:", y.shape)
 for name, param in block.named_parameters():
     print(f"{name:30s} {tuple(param.shape)}")
     
-    
+# old but useful for reference    
 # class GPT2(nn.Module):
 #     def __init__(
 #         self,
@@ -1070,6 +1071,43 @@ print("position std  :", test_model.transformer["wpe"].weight.std().item())
 print("attn proj std :", test_model.transformer["h"][0].attn.c_proj.weight.std().item())
 print("mlp proj std  :", test_model.transformer["h"][0].mlp.c_proj.weight.std().item())
 
+# Select Device - On MPS so CUDA optimization needs some safety checks.
+
+def get_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+device = get_device()
+
+if device.type == "cuda":
+    torch.set_float32_matmul_precision("high")
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    
+
+print("device:", device)
+
+if device.type == "cuda":
+    amp_dtype = torch.bfloat16
+    amp_enabled = True
+else:
+    amp_dtype = torch.float32
+    amp_enabled = False
+
+use_grad_scaler = (
+    device.type == "cuda"
+    and amp_dtype == torch.float16
+)
+
+scaler = (
+    torch.amp.GradScaler("cuda")
+    if use_grad_scaler
+    else None
+)
 
 import time
 
@@ -1114,3 +1152,84 @@ for step in range(10):
         f"loss {loss.item():.4f} | "
         f"{elapsed * 1000:.2f} ms"
     )
+    
+    
+
+def synchronize_device():
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    elif device.type == "mps":
+        torch.mps.synchronize() 
+
+def benchmark_step(model, optimizer, x, y):
+    model.train()
+
+    optimizer.zero_grad(set_to_none=True)
+
+    synchronize_device()
+    start = time.time()
+
+    with torch.autocast(
+        device_type=device.type,
+        dtype=amp_dtype,
+        enabled=amp_enabled,
+    ):
+        logits, loss = model(x, y)
+
+    synchronize_device()
+    forward_time = time.time() - start
+
+    start = time.time()
+
+    if scaler is not None:
+        scaler.scale(loss).backward()
+    else:
+        loss.backward()
+
+    synchronize_device()
+    backward_time = time.time() - start
+
+    start = time.time()
+
+    if scaler is not None:
+        scaler.step(optimizer)
+        scaler.update()
+    else:
+        optimizer.step()
+
+    synchronize_device()
+    optimizer_time = time.time() - start
+
+    return {
+        "forward": forward_time,
+        "backward": backward_time,
+        "optimizer": optimizer_time,
+        "loss": loss.item(),
+    }
+        
+batch_size = 4
+block_size = 16
+
+x, y = get_batch(
+    tokens,
+    batch_size,
+    block_size,
+    device,
+)
+
+result = benchmark_step(
+    train_model,
+    optimizer,
+    x,
+    y,
+)
+
+print(f"forward : {result['forward']:.3f}s")
+print(f"backward: {result['backward']:.3f}s")
+print(f"optimizer: {result['optimizer']:.3f}s")
+print(f"loss: {result['loss']:.4f}")
+
+print(f"PyTorch: {torch.__version__}")
+print(f"device: {device}")
+print(f"AMP enabled: {amp_enabled}")
+print(f"AMP dtype: {amp_dtype}")
