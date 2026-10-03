@@ -1119,6 +1119,9 @@ train_model = GPT2(
     n_embd=config.n_embd,
 ).to(device)
 
+if device.type == "cuda":
+    train_model = torch.compile(train_model)
+    
 optimizer = torch.optim.AdamW(
     train_model.parameters(),
     lr=3e-4,
