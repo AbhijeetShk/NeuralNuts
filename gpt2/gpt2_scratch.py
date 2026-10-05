@@ -42,6 +42,9 @@ def get_device():
 device = get_device()
 print("device:", device)
 
+use_flash = device.type == "cuda"
+
+print("flash attention:", use_flash)
 
 class GPT2Embeddings(nn.Module):
     def __init__(self, vocab_size, block_size, n_embd):
@@ -155,20 +158,27 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
 
-        # Attention scores.
-        att = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        if use_flash:
+            y = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=None,
+                dropout_p=self.attn_dropout.p if self.training else 0.0,
+                is_causal=True,
+            )
+        else:
+            att = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
 
-        # preventing attending to future tokens.
-        att = att.masked_fill(
-            self.bias[:, :, :T, :T] == 0,
-            float("-inf")
-        )
+            att = att.masked_fill(
+                self.bias[:, :, :T, :T] == 0,
+                float("-inf")
+            )
 
-        att = F.softmax(att, dim=-1)
-        att = self.attn_dropout(att)
+            att = F.softmax(att, dim=-1)
+            att = self.attn_dropout(att)
 
-        # weighted combination of values.
-        y = att @ v
+            y = att @ v
 
         # [B, n_head, T, head_dim]
         # -> [B, T, n_head, head_dim]
