@@ -580,12 +580,25 @@ reference_model = GPT2LMHeadModel.from_pretrained(
     "openai-community/gpt2"
 )
 
-def load_gpt2_weights(model, reference_model):
-    with torch.no_grad():
+original_vocab_size = config.vocab_size
+padded_vocab_size = 50304
+train_vocab_size = padded_vocab_size
 
+print("original vocab:", original_vocab_size)
+print("padded vocab:", padded_vocab_size)
+
+def load_gpt2_weights(model, reference_model):
+    
+    with torch.no_grad():
+        
+        model.transformer["wte"].weight[:original_vocab_size].copy_(
+        reference_model.transformer.wte.weight
+        )
+        
         # Token and positional embeddings
-        model.transformer["wte"].weight.copy_(
-            reference_model.transformer.wte.weight
+        model.transformer["wte"].weight[original_vocab_size:].normal_(
+        mean=0.0,
+        std=0.02,
         )
 
         model.transformer["wpe"].weight.copy_(
@@ -732,35 +745,50 @@ print("reference device:", next(reference_model.parameters()).device)
 print("our model device:", next(model.parameters()).device)
 print("input device:", idx_device.device)
 
+model = model.to("cpu")
+model = model.to(device)
+
+idx = idx.to(device)
+
+print("Model:", model.transformer["wte"].weight.device)
+print("Input:", idx.device)
+
+
 with torch.no_grad():
     reference_logits = reference_model(idx_cpu).logits
     our_logits, _ = model(idx_device)
 
-our_logits_cpu = our_logits.cpu()
+with torch.no_grad():
+    hf_logits = reference_model(idx.cpu()).logits
+    our_logits, loss = model(idx)
 
-print("reference:", reference_logits.shape)
-print("ours     :", our_logits_cpu.shape)
+# original GPT-2 vocabulary (50257 tokens)
+our_original_logits = our_logits[..., :original_vocab_size]
 
-diff = (reference_logits - our_logits_cpu).abs()
+# moving logits to CPU for comparing
+hf_logits_cpu = hf_logits.cpu()
+our_logits_cpu = our_original_logits.cpu()
 
-print("max diff :", diff.max().item())
-print("mean diff:", diff.mean().item())
-    
-    
-print("reference:", reference_logits.shape)
-print("ours     :", our_logits.shape)
+print("HF logits shape:", hf_logits_cpu.shape)
+print("Our logits shape:", our_logits_cpu.shape)
 
-max_diff = (
-    reference_logits - our_logits_cpu
-).abs().max()
+print(
+    "max diff:",
+    (hf_logits_cpu - our_logits_cpu).abs().max().item()
+)
 
-print("max absolute difference:", max_diff.item())
+print(
+    "mean diff:",
+    (hf_logits_cpu - our_logits_cpu).abs().mean().item()
+)
 
-mean_diff = (
-    reference_logits - our_logits_cpu
-).abs().mean()
+# predicting next token using only the original vocabulary
+hf_next = torch.argmax(hf_logits_cpu[:, -1, :], dim=-1)
+our_next = torch.argmax(our_logits_cpu[:, -1, :], dim=-1)
 
-print("mean absolute difference:", mean_diff.item())
+print("HF :", repr(tokenizer.decode(hf_next.tolist())))
+print("Ours:", repr(tokenizer.decode(our_next.tolist())))
+
 
 
 reference_next = torch.argmax(
