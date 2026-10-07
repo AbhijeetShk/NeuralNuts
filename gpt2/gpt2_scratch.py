@@ -220,12 +220,14 @@ class GPT2MLP(nn.Module):
             4 * n_embd,
             n_embd
         )
-
+        
+        self.act = nn.GELU(approximate="tanh")
+        
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         x = self.c_fc(x)
-        x = F.gelu(x)
+        x = self.act(x)
         x = self.c_proj(x)
         x = self.dropout(x)
 
@@ -683,14 +685,6 @@ model = GPT2(
     n_head=config.n_head,
     n_embd=config.n_embd,
 )
-
-train_model = GPT2(
-    vocab_size=train_vocab_size,
-    block_size=config.n_positions,
-    n_layer=config.n_layer,
-    n_head=config.n_head,
-    n_embd=config.n_embd,
-).to(device)
 
 load_gpt2_weights(
     model,
@@ -1162,9 +1156,11 @@ train_model = GPT2(
     n_layer=config.n_layer,
     n_head=config.n_head,
     n_embd=config.n_embd,
-).to(device)
+)
 
-load_gpt2_weights(train_model, reference_model)
+# load_gpt2_weights(train_model, reference_model) dont need this cause i changed the vocab to fresh 50304 vocab size instead of 50257. So no need to load weights from reference model.
+
+train_model = train_model.to(device)
 
 if device.type == "cuda":
     train_model = torch.compile(train_model)
