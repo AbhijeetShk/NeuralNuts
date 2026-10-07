@@ -684,6 +684,13 @@ model = GPT2(
     n_embd=config.n_embd,
 )
 
+train_model = GPT2(
+    vocab_size=train_vocab_size,
+    block_size=config.n_positions,
+    n_layer=config.n_layer,
+    n_head=config.n_head,
+    n_embd=config.n_embd,
+).to(device)
 
 load_gpt2_weights(
     model,
@@ -1150,24 +1157,29 @@ scaler = (
 import time
 
 train_model = GPT2(
-    vocab_size=config.vocab_size,
+    vocab_size=train_vocab_size,
     block_size=config.n_positions,
     n_layer=config.n_layer,
     n_head=config.n_head,
     n_embd=config.n_embd,
 ).to(device)
 
+load_gpt2_weights(train_model, reference_model)
+
 if device.type == "cuda":
     train_model = torch.compile(train_model)
     
 optimizer = torch.optim.AdamW(
     train_model.parameters(),
-    lr=3e-4,
+    lr=6e-4,
+    betas=(0.9, 0.95),
+    weight_decay=0.1,
 )
 
 train_model.train()
 
 for step in range(10):
+
     x, y = get_batch(
         tokens,
         batch_size=4,
@@ -1180,7 +1192,14 @@ for step in range(10):
     logits, loss = train_model(x, y)
 
     optimizer.zero_grad(set_to_none=True)
+
     loss.backward()
+
+    torch.nn.utils.clip_grad_norm_(
+        train_model.parameters(),
+        max_norm=1.0,
+    )
+
     optimizer.step()
 
     if device.type == "mps":
