@@ -206,6 +206,42 @@ y = attention(x)
 print("input :", x.shape)
 print("output:", y.shape)
 
+def configure_optimizer(model, weight_decay, learning_rate):
+    param_dict = {
+        name: param
+        for name, param in model.named_parameters()
+        if param.requires_grad
+    }
+
+    decay_params = [
+        param for param in param_dict.values()
+        if param.dim() >= 2
+    ]
+
+    nodecay_params = [
+        param for param in param_dict.values()
+        if param.dim() < 2
+    ]
+
+    optim_groups = [
+        {
+            "params": decay_params,
+            "weight_decay": weight_decay,
+        },
+        {
+            "params": nodecay_params,
+            "weight_decay": 0.0,
+        },
+    ]
+
+    optimizer = torch.optim.AdamW(
+        optim_groups,
+        lr=learning_rate,
+        betas=(0.9, 0.95),
+        eps=1e-8,
+    )
+
+    return optimizer
 
 class GPT2MLP(nn.Module):
     def __init__(self, n_embd, dropout=0.0):
@@ -1289,3 +1325,55 @@ print(f"PyTorch: {torch.__version__}")
 print(f"device: {device}")
 print(f"AMP enabled: {amp_enabled}")
 print(f"AMP dtype: {amp_dtype}")
+
+
+# training loop with configured optimizer - weight decay and learning rate
+optimizer = configure_optimizer(
+    model,
+    weight_decay=0.1,
+    learning_rate=6e-4,
+)
+for i, group in enumerate(optimizer.param_groups):
+    print(
+        f"group {i}: "
+        f"parameters={len(group['params'])}, "
+        f"weight_decay={group['weight_decay']}"
+    )
+    
+    
+import time
+model.train()
+
+for step in range(10):
+    x, y = get_batch(
+        tokens,
+        batch_size=4,
+        block_size=16,
+        device=device,
+    )
+
+    start = time.perf_counter()
+
+    logits, loss = model(x, y)
+
+    optimizer.zero_grad(set_to_none=True)
+
+    loss.backward()
+
+    torch.nn.utils.clip_grad_norm_(
+        model.parameters(),
+        max_norm=1.0,
+    )
+
+    optimizer.step()
+
+    if device.type == "mps":
+        torch.mps.synchronize()
+
+    elapsed = time.perf_counter() - start
+
+    print(
+        f"step {step:02d} | "
+        f"loss {loss.item():.4f} | "
+        f"{elapsed * 1000:.2f} ms"
+    )
