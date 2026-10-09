@@ -1339,12 +1339,37 @@ for i, group in enumerate(optimizer.param_groups):
         f"parameters={len(group['params'])}, "
         f"weight_decay={group['weight_decay']}"
     )
+ 
+max_lr = 6e-4
+min_lr = max_lr * 0.1
+warmup_steps = 2
+max_steps = 10
+
+def get_lr(step):
+    if step < warmup_steps:
+        return max_lr * (step + 1) / warmup_steps
+
+    if step > max_steps:
+        return min_lr
+
+    decay_ratio = (step - warmup_steps) / (max_steps - warmup_steps)
+    assert 0 <= decay_ratio <= 1
+
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+    return min_lr + coeff * (max_lr - min_lr)    
     
+for step in range(max_steps):
+    print(f"step {step:02d} | lr {get_lr(step):.6e}")
     
 import time
 model.train()
 
-for step in range(10):
+for step in range(max_steps):
+    lr = get_lr(step)
+
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = lr
+
     x, y = get_batch(
         tokens,
         batch_size=4,
@@ -1354,9 +1379,9 @@ for step in range(10):
 
     start = time.perf_counter()
 
-    logits, loss = model(x, y)
-
     optimizer.zero_grad(set_to_none=True)
+
+    logits, loss = model(x, y)
 
     loss.backward()
 
@@ -1375,5 +1400,6 @@ for step in range(10):
     print(
         f"step {step:02d} | "
         f"loss {loss.item():.4f} | "
+        f"lr {lr:.2e} | "
         f"{elapsed * 1000:.2f} ms"
     )
