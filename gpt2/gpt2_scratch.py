@@ -1403,3 +1403,57 @@ for step in range(max_steps):
         f"lr {lr:.2e} | "
         f"{elapsed * 1000:.2f} ms"
     )
+    
+    
+    
+# Gradient Accumulation --- new training loop
+
+
+
+model.train()
+
+micro_batch_size = 4
+grad_accum_steps = 4
+max_steps = 10
+
+for step in range(max_steps):
+    lr = get_lr(step)
+
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = lr
+
+    start = time.perf_counter()
+    optimizer.zero_grad(set_to_none=True)
+    accumulated_loss = 0.0
+
+    for micro_step in range(grad_accum_steps):
+        x, y = get_batch(
+            tokens,
+            batch_size=micro_batch_size,
+            block_size=16,
+            device=device,
+        )
+
+        logits, loss = model(x, y)
+        accumulated_loss += loss.detach().item()
+        (loss / grad_accum_steps).backward()
+
+    grad_norm = torch.nn.utils.clip_grad_norm_(
+        model.parameters(),
+        max_norm=1.0,
+    )
+
+    optimizer.step()
+
+    if device.type == "mps":
+        torch.mps.synchronize()
+
+    elapsed = time.perf_counter() - start
+
+    print(
+        f"step {step:02d} | "
+        f"loss {accumulated_loss / grad_accum_steps:.4f} | "
+        f"lr {lr:.2e} | "
+        f"grad_norm {grad_norm.item():.4f} | "
+        f"{elapsed * 1000:.2f} ms"
+    )
