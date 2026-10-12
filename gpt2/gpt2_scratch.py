@@ -3,6 +3,7 @@ from transformers import GPT2LMHeadModel, GPT2TokenizerFast
 import math
 import torch.nn as nn
 import torch.nn.functional as F
+import inspect
 
 torch.manual_seed(1337)
 
@@ -206,7 +207,12 @@ y = attention(x)
 print("input :", x.shape)
 print("output:", y.shape)
 
-def configure_optimizer(model, weight_decay, learning_rate):
+
+def configure_optimizer(
+    model,
+    weight_decay,
+    learning_rate,
+):
     param_dict = {
         name: param
         for name, param in model.named_parameters()
@@ -234,12 +240,22 @@ def configure_optimizer(model, weight_decay, learning_rate):
         },
     ]
 
+    fused_available = "fused" in inspect.signature(
+        torch.optim.AdamW
+    ).parameters
+
+    use_fused = fused_available and device.type == "cuda"
+
     optimizer = torch.optim.AdamW(
         optim_groups,
         lr=learning_rate,
         betas=(0.9, 0.95),
         eps=1e-8,
+        fused=use_fused,
     )
+
+    print("Fused AdamW available:", fused_available)
+    print("Using Fused AdamW:", use_fused)
 
     return optimizer
 
