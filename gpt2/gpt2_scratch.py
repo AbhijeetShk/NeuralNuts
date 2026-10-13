@@ -1214,6 +1214,18 @@ train_model = GPT2(
 
 train_model = train_model.to(device)
 
+use_amp = device.type == "cuda"
+
+if use_amp and torch.cuda.is_bf16_supported():
+    amp_dtype = torch.bfloat16
+else:
+    amp_dtype = torch.float16
+
+use_grad_scaler = use_amp and amp_dtype == torch.float16
+
+scaler = torch.cuda.amp.GradScaler(
+    enabled=use_grad_scaler
+)
 if device.type == "cuda":
     train_model = torch.compile(train_model)
     
@@ -1450,9 +1462,16 @@ for step in range(max_steps):
             device=device,
         )
 
-        logits, loss = model(x, y)
+        with torch.autocast(
+            device_type="cuda",
+            dtype=amp_dtype,
+            enabled=use_amp,
+        ):
+            logits, loss = model(x, y)
+
         accumulated_loss += loss.detach().item()
-        (loss / grad_accum_steps).backward()
+        loss = loss / grad_accum_steps
+        scaler.scale(loss).backward()
 
     grad_norm = torch.nn.utils.clip_grad_norm_(
         model.parameters(),
