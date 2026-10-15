@@ -7,3 +7,5 @@ __pycache__
 .Python
 env/
 .DS_Store
+data_smoke/
+data/
