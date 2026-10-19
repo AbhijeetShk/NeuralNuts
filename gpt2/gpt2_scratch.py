@@ -1122,7 +1122,28 @@ class DataLoaderLite:
             f"Shards are too small for batch size {B}, "
             f"sequence length {T}, and rank {self.process_rank}"
         )
-    
+
+
+@torch.no_grad()
+def estimate_loss(model, loader, eval_iters=10):
+    was_training = model.training
+    model.eval()
+    losses = []
+
+    try:
+        for _ in range(eval_iters):
+            x, y = loader.next_batch()
+            _, loss = model(x, y)
+            losses.append(loss.item())
+    finally:
+        model.train(was_training)
+
+    return sum(losses) / len(losses)
+
+
+
+
+print(f"Validation loss: {validation_loss:.4f}")
 
 train_text = """
 The future of artificial intelligence is uncertain.
@@ -1564,3 +1585,9 @@ print("Token alignment:", torch.equal(x[:, 1:], y[:, :-1]))
 val_x, val_y = val_loader.next_batch()
 
 print("Validation shapes:", val_x.shape, val_y.shape)
+
+validation_loss = estimate_loss(
+    model,
+    val_loader,
+    eval_iters=3,
+)
