@@ -1591,3 +1591,175 @@ validation_loss = estimate_loss(
     val_loader,
     eval_iters=3,
 )
+
+#using shard loader
+
+
+class DataLoaderLite:
+    def __init__(
+        self,
+        B,
+        T,
+        data_dir,
+        split="train",
+        process_rank=0,
+        num_processes=1,
+        device="cpu",
+    ):
+        self.B = B
+        self.T = T
+        self.data_dir = data_dir
+        self.split = split
+        self.process_rank = process_rank
+        self.num_processes = num_processes
+        self.device = torch.device(device)
+
+        self.shards = sorted(
+            glob.glob(os.path.join(data_dir, f"{split}_*.npy"))
+        )
+
+        if not self.shards:
+            raise FileNotFoundError(
+                f"No {split} shards found in {data_dir}"
+            )
+
+        if not 0 <= process_rank < num_processes:
+            raise ValueError("process_rank must be within num_processes")
+
+        self.reset()
+
+    def _load_shard(self, shard_index):
+        self.shard_index = shard_index
+        self.tokens = torch.from_numpy(
+            np.load(self.shards[self.shard_index]).astype(np.int64)
+        )
+        self.current_position = 0
+
+        if len(self.tokens) == 0:
+            raise ValueError(f"Empty shard: {self.shards[self.shard_index]}")
+
+    def reset(self):
+        self._load_shard(0)
+        self.current_position = self.process_rank * self.B * self.T
+
+    def next_batch(self):
+        B, T = self.B, self.T
+        required_tokens = B * T + 1
+        chunks = []
+        remaining = required_tokens
+
+        while remaining > 0:
+            available = len(self.tokens) - self.current_position
+
+            if available <= 0:
+                next_index = (self.shard_index + 1) % len(self.shards)
+                self._load_shard(next_index)
+                available = len(self.tokens)
+
+            take = min(remaining, available)
+
+            chunks.append(
+                self.tokens[
+                    self.current_position:self.current_position + take
+                ]
+            )
+
+            self.current_position += take
+            remaining -= take
+
+        buf = torch.cat(chunks)
+        x = buf[:-1].view(B, T)
+        y = buf[1:].view(B, T)
+
+        self.current_position += (self.num_processes - 1) * B * T
+
+        return x.to(self.device), y.to(self.device)
+
+
+micro_batch_size = 4
+grad_accum_steps = 4
+max_steps = 10
+block_size = 16
+
+train_loader = DataLoaderLite(
+    B=micro_batch_size,
+    T=block_size,
+    data_dir="data_smoke",
+    split="train",
+    device=device,
+)
+
+val_loader = DataLoaderLite(
+    B=micro_batch_size,
+    T=block_size,
+    data_dir="data_smoke",
+    split="val",
+    device=device,
+)
+
+x, y = train_loader.next_batch()
+
+print("x shape:", x.shape)
+print("y shape:", y.shape)
+print("Token alignment:", torch.equal(x[:, 1:], y[:, :-1]))
+
+val_x, val_y = val_loader.next_batch()
+
+print("Validation shapes:", val_x.shape, val_y.shape)
+
+model.train()
+
+for step in range(max_steps):
+    lr = get_lr(step)
+
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = lr
+
+    start = time.perf_counter()
+    optimizer.zero_grad(set_to_none=True)
+    accumulated_loss = 0.0
+
+    for micro_step in range(grad_accum_steps):
+        x, y = train_loader.next_batch()
+
+        with torch.autocast(
+            device_type=device.type,
+            dtype=amp_dtype,
+            enabled=use_amp,
+        ):
+            logits, loss = model(x, y)
+
+        accumulated_loss += loss.detach().item()
+        loss = loss / grad_accum_steps
+        scaler.scale(loss).backward()
+
+    grad_norm = torch.nn.utils.clip_grad_norm_(
+        model.parameters(),
+        max_norm=1.0,
+    )
+
+    scaler.step(optimizer)
+    scaler.update()
+
+    if device.type == "mps":
+        torch.mps.synchronize()
+    elif device.type == "cuda":
+        torch.cuda.synchronize()
+
+    elapsed = time.perf_counter() - start
+
+    print(
+        f"step {step:02d} | "
+        f"loss {accumulated_loss / grad_accum_steps:.4f} | "
+        f"lr {lr:.2e} | "
+        f"grad_norm {grad_norm.item():.4f} | "
+        f"{elapsed * 1000:.2f} ms"
+    )
+
+validation_loss = estimate_loss(
+    model,
+    val_loader,
+    eval_iters=3,
+)
+
+print(f"Validation loss: {validation_loss}")
