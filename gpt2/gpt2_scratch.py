@@ -1763,3 +1763,52 @@ validation_loss = estimate_loss(
 )
 
 print(f"Validation loss: {validation_loss}")
+
+
+def benchmark_attention(use_flash, iterations=20):
+    attention = CausalSelfAttention(
+        n_embd=config.n_embd,
+        n_head=config.n_head,
+        block_size=config.n_positions,
+    ).to(device)
+
+    attention.train()
+    x = torch.randn(4, 16, config.n_embd, device=device)
+
+    for _ in range(5):
+        attention.zero_grad(set_to_none=True)
+        y = attention(x)
+        y.mean().backward()
+
+    if device.type == "mps":
+        torch.mps.synchronize()
+    elif device.type == "cuda":
+        torch.cuda.synchronize()
+
+    start = time.perf_counter()
+
+    for _ in range(iterations):
+        attention.zero_grad(set_to_none=True)
+        y = attention(x)
+        y.mean().backward()
+
+    if device.type == "mps":
+        torch.mps.synchronize()
+    elif device.type == "cuda":
+        torch.cuda.synchronize()
+
+    return (time.perf_counter() - start) * 1000 / iterations
+
+
+original_use_flash = use_flash
+
+use_flash = True
+flash_time = benchmark_attention(True)
+
+use_flash = False
+manual_time = benchmark_attention(False)
+
+use_flash = original_use_flash
+
+print(f"Scaled dot-product: {flash_time:.2f} ms")
+print(f"Manual attention: {manual_time:.2f} ms")
