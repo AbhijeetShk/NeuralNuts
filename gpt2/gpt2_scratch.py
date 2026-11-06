@@ -7,7 +7,8 @@ import inspect
 import glob
 import os
 import numpy as np
-
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 torch.manual_seed(1337)
 
@@ -1558,6 +1559,7 @@ for step in range(max_steps):
         f"grad_norm {grad_norm.item():.4f} | "
         f"{elapsed * 1000:.2f} ms"
     )
+    
 
 
 train_loader = DataLoaderLite(
@@ -1812,3 +1814,139 @@ use_flash = original_use_flash
 
 print(f"Scaled dot-product: {flash_time:.2f} ms")
 print(f"Manual attention: {manual_time:.2f} ms")
+
+
+
+## WITH DDP
+
+def setup_distributed():
+    distributed = "RANK" in os.environ and "WORLD_SIZE" in os.environ
+
+    if distributed:
+        assert torch.cuda.is_available(), "DDP currently requires CUDA in this setup"
+
+        dist.init_process_group(backend="nccl")
+
+        rank = int(os.environ["RANK"])
+        local_rank = int(os.environ["LOCAL_RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+
+        torch.cuda.set_device(local_rank)
+        device = torch.device("cuda", local_rank)
+
+    else:
+        rank = 0
+        local_rank = 0
+        world_size = 1
+
+        if torch.backends.mps.is_available():
+            device = torch.device("mps")
+        elif torch.cuda.is_available():
+            device = torch.device("cuda")
+        else:
+            device = torch.device("cpu")
+
+    return distributed, rank, local_rank, world_size, device
+
+
+distributed, rank, local_rank, world_size, device = setup_distributed()
+
+is_master = rank == 0
+
+print(f"Device: {device}")
+print(f"Rank: {rank}")
+print(f"World size: {world_size}")
+print(f"Distributed: {distributed}")
+
+
+model = model.to(device)
+
+if distributed:
+    model = DDP(
+        model,
+        device_ids=[local_rank],
+        output_device=local_rank
+    )
+optimizer = torch.optim.AdamW(
+    model.parameters(),
+    lr=6e-4,
+    betas=(0.9, 0.95),
+    weight_decay=0.1
+)
+
+
+        
+        
+
+model.train()
+
+micro_batch_size = 4
+grad_accum_steps = 4
+max_steps = 10
+block_size = 16
+
+for step in range(max_steps):
+    lr = get_lr(step)
+
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = lr
+
+    start = time.perf_counter()
+    optimizer.zero_grad(set_to_none=True)
+    accumulated_loss = 0.0
+
+    for micro_step in range(grad_accum_steps):
+
+        x, y = train_loader.next_batch()
+
+        if distributed and micro_step < grad_accum_steps - 1:
+            sync_context = model.no_sync()
+        else:
+            sync_context = torch.enable_grad()
+
+        with sync_context:
+            with torch.autocast(
+                device_type=device.type,
+                dtype=amp_dtype,
+                enabled=use_amp,
+            ):
+                logits, loss = model(x, y)
+
+            accumulated_loss += loss.detach().item()
+            loss = loss / grad_accum_steps
+
+            scaler.scale(loss).backward()
+
+    scaler.unscale_(optimizer)
+
+    grad_norm = torch.nn.utils.clip_grad_norm_(
+        model.parameters(),
+        max_norm=1.0,
+    )
+
+    scaler.step(optimizer)
+    scaler.update()
+
+    if distributed:
+        loss_tensor = torch.tensor(
+            accumulated_loss / grad_accum_steps,
+            device=device
+        )
+        dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
+        accumulated_loss = loss_tensor.item() * grad_accum_steps
+
+    if device.type == "mps":
+        torch.mps.synchronize()
+    elif device.type == "cuda":
+        torch.cuda.synchronize()
+
+    elapsed = time.perf_counter() - start
+
+    if is_master:
+        print(
+            f"step {step:02d} | "
+            f"loss {accumulated_loss / grad_accum_steps:.4f} | "
+            f"lr {lr:.2e} | "
+            f"grad_norm {grad_norm.item():.4f} | "
+            f"{elapsed * 1000:.2f} ms"
+        )
