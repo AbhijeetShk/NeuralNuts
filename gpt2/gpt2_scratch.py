@@ -1859,7 +1859,7 @@ print(f"World size: {world_size}")
 print(f"Distributed: {distributed}")
 
 
-model = model.to(device)
+model = train_model.to(device)
 
 if distributed:
     model = DDP(
