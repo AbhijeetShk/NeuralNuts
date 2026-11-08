@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-
+import hellaswag
 
 
 # config
@@ -27,7 +27,9 @@ BLOCK_SIZE = 16
 MICRO_BATCH_SIZE = 4
 GRAD_ACCUM_STEPS = 4
 
-MAX_STEPS = 10
+MAX_STEPS = 3
+HELLASWAG_EVAL_INTERVAL = 2
+HELLASWAG_EVAL_EXAMPLES = 10
 EVAL_INTERVAL = 10
 EVAL_ITERS = 3
 
@@ -473,13 +475,14 @@ def estimate_loss(model, loader, eval_iters, distributed, device, is_master):
 
 # Training
 
+
 def train():
 
     distributed, rank, local_rank, world_size, device = setup_distributed()
     is_master = rank == 0
 
     torch.manual_seed(SEED)
-    
+
     global use_flash
     use_flash = device.type == "cuda"
 
@@ -522,7 +525,9 @@ def train():
             device_ids=[local_rank],
             output_device=local_rank,
         )
+
     torch.manual_seed(SEED + rank)
+
     optimizer = configure_optimizer(
         model,
         learning_rate=MAX_LR,
@@ -553,15 +558,19 @@ def train():
     model.train()
 
     for step in range(MAX_STEPS):
+
         learning_rate = get_lr(step)
+
         for group in optimizer.param_groups:
             group["lr"] = learning_rate
 
         optimizer.zero_grad(set_to_none=True)
+
         step_loss = torch.zeros((), device=device)
         start_time = time.perf_counter()
 
         for micro_step in range(GRAD_ACCUM_STEPS):
+
             x, y = train_loader.next_batch()
 
             sync_context = (
@@ -571,6 +580,7 @@ def train():
             )
 
             with sync_context:
+
                 if use_amp:
                     autocast_context = torch.autocast(
                         device_type="cuda",
@@ -587,6 +597,7 @@ def train():
                 scaler.scale(loss).backward()
 
         scaler.unscale_(optimizer)
+
         grad_norm = torch.nn.utils.clip_grad_norm_(
             model.parameters(),
             MAX_GRAD_NORM,
@@ -617,7 +628,9 @@ def train():
                 f"{elapsed_ms:.2f} ms"
             )
 
+        # Validation loss evaluation
         if (step + 1) % EVAL_INTERVAL == 0:
+
             validation_loss = estimate_loss(
                 model,
                 val_loader,
@@ -630,12 +643,51 @@ def train():
             if is_master:
                 print(f"validation loss: {validation_loss:.4f}")
 
+        # Periodic HellaSwag evaluation
+        if (step + 1) % HELLASWAG_EVAL_INTERVAL == 0:
+
+            results = hellaswag.evaluate(
+                model,
+                split="val",
+                device=device,
+                max_examples=HELLASWAG_EVAL_EXAMPLES,
+                distributed=distributed,
+                rank=rank,
+                world_size=world_size,
+            )
+
+            if is_master:
+                print(
+                    f"HellaSwag accuracy: "
+                    f"{results['accuracy'] * 100:.2f}% "
+                    f"({results['correct']}/{results['total']})"
+                )
+
+
+    if MAX_STEPS % HELLASWAG_EVAL_INTERVAL != 0:
+
+        results = hellaswag.evaluate(
+            model,
+            split="val",
+            device=device,
+            max_examples=HELLASWAG_EVAL_EXAMPLES,
+            distributed=distributed,
+            rank=rank,
+            world_size=world_size,
+        )
+
+        if is_master:
+            print(
+                f"Final HellaSwag accuracy: "
+                f"{results['accuracy'] * 100:.2f}% "
+                f"({results['correct']}/{results['total']})"
+            )
+
     if distributed:
         dist.barrier()
 
     if is_master:
         print("Training complete.")
-
 
 
 if __name__ == "__main__":
