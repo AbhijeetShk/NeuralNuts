@@ -5,6 +5,7 @@ import glob
 import inspect
 from bisect import bisect_right
 from contextlib import nullcontext
+import tiktoken
 
 import numpy as np
 import torch
@@ -43,7 +44,17 @@ DROPOUT = 0.0
 USE_COMPILE = True
 
 
+enc = tiktoken.get_encoding("gpt2")
 
+SAMPLE_INTERVAL = 1000
+SAMPLE_MAX_NEW_TOKENS = 80
+SAMPLE_TOP_K = 50
+
+SAMPLE_PROMPTS = [
+    "Once upon a time",
+    "The future of artificial intelligence",
+    "In a distant land",
+]
 
 def setup_distributed():
     distributed = int(os.environ.get("WORLD_SIZE", "1")) > 1
@@ -472,6 +483,34 @@ def estimate_loss(model, loader, eval_iters, distributed, device, is_master):
     finally:
         model.train(was_training)
 
+@torch.no_grad()
+def generate_samples(model, device):
+    was_training = model.training
+    model.eval()
+
+    try:
+        for prompt in SAMPLE_PROMPTS:
+            tokens = enc.encode(prompt)
+
+            idx = torch.tensor(
+                tokens,
+                dtype=torch.long,
+                device=device,
+            ).unsqueeze(0)
+
+            output = model.generate(
+                idx,
+                max_new_tokens=SAMPLE_MAX_NEW_TOKENS,
+                top_k=SAMPLE_TOP_K,
+            )
+
+            generated_text = enc.decode(output[0].tolist())
+
+            print(f"\nPrompt: {prompt}")
+            print(f"Generated: {generated_text}")
+
+    finally:
+        model.train(was_training)
 
 # Training
 
@@ -663,6 +702,37 @@ def train():
                     f"({results['correct']}/{results['total']})"
                 )
 
+        if is_master and (step + 1) % SAMPLE_INTERVAL == 0:
+
+            generation_model = model.module if distributed else model
+
+            if hasattr(generation_model, "_orig_mod"):
+                generation_model = generation_model._orig_mod
+
+            print("\n--- Generated Samples ---")
+
+            generate_samples(
+                generation_model,
+                device,
+            )
+
+            print("\n--- End Generated Samples ---")
+
+    if is_master and MAX_STEPS % SAMPLE_INTERVAL != 0:
+
+        generation_model = model.module if distributed else model
+
+        if hasattr(generation_model, "_orig_mod"):
+            generation_model = generation_model._orig_mod
+
+        print("\n--- Final Generated Samples ---")
+
+        generate_samples(
+            generation_model,
+            device,
+        )
+
+        print("\n--- End Final Generated Samples ---")
 
     if MAX_STEPS % HELLASWAG_EVAL_INTERVAL != 0:
 
