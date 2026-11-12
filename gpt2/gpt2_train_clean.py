@@ -14,7 +14,9 @@ import torch.nn.functional as F
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 import hellaswag
-
+CHECKPOINT_DIR = os.path.join(os.path.dirname(__file__), "checkpoints")
+SAVE_INTERVAL = 1000
+RESUME_FROM = None
 
 # config
 
@@ -512,7 +514,50 @@ def generate_samples(model, device):
     finally:
         model.train(was_training)
 
+def get_raw_model(model):
+    if hasattr(model, "module"):
+        model = model.module
+
+    if hasattr(model, "_orig_mod"):
+        model = model._orig_mod
+
+    return model
+
+
+def save_checkpoint(model, optimizer, scaler, step):
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+
+    checkpoint = {
+        "step": step,
+        "model": get_raw_model(model).state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scaler": scaler.state_dict(),
+    }
+
+    checkpoint_path = os.path.join(
+        CHECKPOINT_DIR,
+        f"checkpoint_{step:08d}.pt",
+    )
+
+    torch.save(checkpoint, checkpoint_path)
+
+    return checkpoint_path
+
+
+def load_checkpoint(model, optimizer, scaler, checkpoint_path, device):
+    checkpoint = torch.load(
+        checkpoint_path,
+        map_location=device,
+    )
+
+    get_raw_model(model).load_state_dict(checkpoint["model"])
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    scaler.load_state_dict(checkpoint["scaler"])
+
+    return checkpoint["step"]
+
 # Training
+
 
 
 def train():
@@ -574,6 +619,20 @@ def train():
         device=device,
     )
 
+    start_step = 0
+
+    if RESUME_FROM is not None:
+        start_step = load_checkpoint(
+            model,
+            optimizer,
+            scaler,
+            RESUME_FROM,
+            device,
+        )
+
+        if is_master:
+            print(f"Resuming training from step {start_step}")
+
     train_loader = DataLoaderLite(
         B=MICRO_BATCH_SIZE,
         T=BLOCK_SIZE,
@@ -596,7 +655,7 @@ def train():
 
     model.train()
 
-    for step in range(MAX_STEPS):
+    for step in range(start_step, MAX_STEPS):
 
         learning_rate = get_lr(step)
 
@@ -704,10 +763,7 @@ def train():
 
         if is_master and (step + 1) % SAMPLE_INTERVAL == 0:
 
-            generation_model = model.module if distributed else model
-
-            if hasattr(generation_model, "_orig_mod"):
-                generation_model = generation_model._orig_mod
+            generation_model = get_raw_model(model)
 
             print("\n--- Generated Samples ---")
 
@@ -718,12 +774,43 @@ def train():
 
             print("\n--- End Generated Samples ---")
 
+        if (step + 1) % SAVE_INTERVAL == 0:
+
+            if distributed:
+                dist.barrier()
+
+            if is_master:
+                checkpoint_path = save_checkpoint(
+                    model,
+                    optimizer,
+                    scaler,
+                    step + 1,
+                )
+                print(f"Checkpoint saved: {checkpoint_path}")
+
+            if distributed:
+                dist.barrier()
+
+    if MAX_STEPS > start_step and MAX_STEPS % SAVE_INTERVAL != 0:
+
+        if distributed:
+            dist.barrier()
+
+        if is_master:
+            checkpoint_path = save_checkpoint(
+                model,
+                optimizer,
+                scaler,
+                MAX_STEPS,
+            )
+            print(f"Final checkpoint saved: {checkpoint_path}")
+
+        if distributed:
+            dist.barrier()
+
     if is_master and MAX_STEPS % SAMPLE_INTERVAL != 0:
 
-        generation_model = model.module if distributed else model
-
-        if hasattr(generation_model, "_orig_mod"):
-            generation_model = generation_model._orig_mod
+        generation_model = get_raw_model(model)
 
         print("\n--- Final Generated Samples ---")
 
@@ -734,7 +821,7 @@ def train():
 
         print("\n--- End Final Generated Samples ---")
 
-    if MAX_STEPS % HELLASWAG_EVAL_INTERVAL != 0:
+    if MAX_STEPS > start_step and MAX_STEPS % HELLASWAG_EVAL_INTERVAL != 0:
 
         results = hellaswag.evaluate(
             model,
