@@ -14,6 +14,8 @@ import torch.nn.functional as F
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 import hellaswag
+import random
+
 CHECKPOINT_DIR = os.path.join(os.path.dirname(__file__), "checkpoints")
 SAVE_INTERVAL = 1000
 RESUME_FROM = None
@@ -56,6 +58,18 @@ SAMPLE_PROMPTS = [
     "The future of artificial intelligence",
     "In a distant land",
 ]
+MAX_STEPS = 5
+SAVE_INTERVAL = 2
+RESUME_FROM = os.path.join(
+    CHECKPOINT_DIR,
+    "checkpoint_00000003.pt",
+)
+
+BLOCK_SIZE = 16
+MAX_STEPS = 5
+MAX_GRAD_NORM = 1.0
+GRAD_ACCUM_STEPS = 4
+RESUME_FROM = None
 
 def setup_distributed():
     distributed = int(os.environ.get("WORLD_SIZE", "1")) > 1
@@ -349,7 +363,34 @@ class DataLoaderLite:
 
     def reset(self):
         self.position = self.process_rank * self.B * self.T
+        
+    def state_dict(self):
+        return {
+            "position": self.position,
+            "B": self.B,
+            "T": self.T,
+            "process_rank": self.process_rank,
+            "num_processes": self.num_processes,
+            "total_tokens": self.total_tokens,
+        }
 
+    def load_state_dict(self, state):
+        expected = {
+            "B": self.B,
+            "T": self.T,
+            "process_rank": self.process_rank,
+            "num_processes": self.num_processes,
+            "total_tokens": self.total_tokens,
+        }
+
+        for key, value in expected.items():
+            if state[key] != value:
+                raise ValueError(
+                    f"DataLoader state mismatch for {key}: "
+                    f"checkpoint={state[key]}, current={value}"
+                )
+
+        self.position = state["position"]    
     def _read_tokens(self, start, count):
         pieces = []
         position = start % self.total_tokens
@@ -522,8 +563,63 @@ def get_raw_model(model):
 
     return model
 
+def get_rng_state():
+    numpy_state = np.random.get_state()
 
-def save_checkpoint(model, optimizer, scaler, step):
+    state = {
+        "python": random.getstate(),
+        "numpy": {
+            "bit_generator": numpy_state[0],
+            "state": torch.from_numpy(numpy_state[1].copy()),
+            "pos": int(numpy_state[2]),
+            "has_gauss": int(numpy_state[3]),
+            "cached_gaussian": float(numpy_state[4]),
+        },
+        "torch": torch.get_rng_state(),
+    }
+
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+
+    if hasattr(torch, "mps") and hasattr(torch.mps, "get_rng_state"):
+        state["mps"] = torch.mps.get_rng_state()
+
+    return state
+
+
+def set_rng_state(state):
+    random.setstate(state["python"])
+
+    numpy_state = state["numpy"]
+    np.random.set_state((
+        numpy_state["bit_generator"],
+        numpy_state["state"].cpu().numpy(),
+        numpy_state["pos"],
+        numpy_state["has_gauss"],
+        numpy_state["cached_gaussian"],
+    ))
+
+    torch.set_rng_state(state["torch"].cpu())
+
+    if "cuda" in state and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all([rng.cpu() for rng in state["cuda"]])
+
+    if (
+        "mps" in state
+        and hasattr(torch, "mps")
+        and hasattr(torch.mps, "set_rng_state")
+    ):
+        torch.mps.set_rng_state(state["mps"].cpu())
+        
+        
+def save_checkpoint(
+    model,
+    optimizer,
+    scaler,
+    train_loader,
+    val_loader,
+    step,
+):
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
     checkpoint = {
@@ -531,6 +627,9 @@ def save_checkpoint(model, optimizer, scaler, step):
         "model": get_raw_model(model).state_dict(),
         "optimizer": optimizer.state_dict(),
         "scaler": scaler.state_dict(),
+        "train_loader": train_loader.state_dict(),
+        "val_loader": val_loader.state_dict(),
+        "rng": get_rng_state(),
     }
 
     checkpoint_path = os.path.join(
@@ -542,16 +641,29 @@ def save_checkpoint(model, optimizer, scaler, step):
 
     return checkpoint_path
 
-
-def load_checkpoint(model, optimizer, scaler, checkpoint_path, device):
+def load_checkpoint(
+    model,
+    optimizer,
+    scaler,
+    train_loader,
+    val_loader,
+    checkpoint_path,
+    device,
+):
     checkpoint = torch.load(
         checkpoint_path,
         map_location=device,
+        weights_only=False,
     )
 
     get_raw_model(model).load_state_dict(checkpoint["model"])
     optimizer.load_state_dict(checkpoint["optimizer"])
     scaler.load_state_dict(checkpoint["scaler"])
+
+    train_loader.load_state_dict(checkpoint["train_loader"])
+    val_loader.load_state_dict(checkpoint["val_loader"])
+
+    set_rng_state(checkpoint["rng"])
 
     return checkpoint["step"]
 
@@ -618,20 +730,6 @@ def train():
         device=device,
     )
 
-    start_step = 0
-
-    if RESUME_FROM is not None:
-        start_step = load_checkpoint(
-            model,
-            optimizer,
-            scaler,
-            RESUME_FROM,
-            device,
-        )
-
-        if is_master:
-            print(f"Resuming training from step {start_step}")
-
     train_loader = DataLoaderLite(
         B=MICRO_BATCH_SIZE,
         T=BLOCK_SIZE,
@@ -651,6 +749,69 @@ def train():
         num_processes=world_size,
         device=device,
     )
+    train_loader_state = train_loader.state_dict()
+
+    x1, y1 = train_loader.next_batch()
+
+    train_loader.load_state_dict(train_loader_state)
+
+    x2, y2 = train_loader.next_batch()
+
+    assert torch.equal(x1, x2), "Training input batch mismatch"
+    assert torch.equal(y1, y2), "Training target batch mismatch"
+
+    print("Training loader restoration: PASSED")
+
+    val_loader_state = val_loader.state_dict()
+
+    x1, y1 = val_loader.next_batch()
+
+    val_loader.load_state_dict(val_loader_state)
+
+    x2, y2 = val_loader.next_batch()
+
+    assert torch.equal(x1, x2), "Validation input batch mismatch"
+    assert torch.equal(y1, y2), "Validation target batch mismatch"
+
+    print("Validation loader restoration: PASSED")
+    
+    rng_state = get_rng_state()
+
+    python_value_1 = random.random()
+    numpy_value_1 = np.random.rand()
+    torch_value_1 = torch.rand(4)
+    device_value_1 = torch.rand(4, device=device)
+
+    set_rng_state(rng_state)
+
+    python_value_2 = random.random()
+    numpy_value_2 = np.random.rand()
+    torch_value_2 = torch.rand(4)
+    device_value_2 = torch.rand(4, device=device)
+
+    assert python_value_1 == python_value_2
+    assert numpy_value_1 == numpy_value_2
+    assert torch.equal(torch_value_1, torch_value_2)
+    assert torch.equal(device_value_1, device_value_2)
+
+    print("RNG restoration: PASSED")
+        
+    start_step = 0
+
+    if RESUME_FROM is not None:
+        start_step = load_checkpoint(
+            model,
+            optimizer,
+            scaler,
+            train_loader,
+            val_loader,
+            RESUME_FROM,
+            device,
+        )
+
+        if is_master:
+            print(f"Resuming training from step {start_step}")
+
 
     model.train()
 
@@ -780,11 +941,13 @@ def train():
 
             if is_master:
                 checkpoint_path = save_checkpoint(
-                    model,
-                    optimizer,
-                    scaler,
-                    step + 1,
-                )
+                        model,
+                        optimizer,
+                        scaler,
+                        train_loader,
+                        val_loader,
+                        MAX_STEPS,
+                    )
                 print(f"Checkpoint saved: {checkpoint_path}")
 
             if distributed:
@@ -800,6 +963,8 @@ def train():
                 model,
                 optimizer,
                 scaler,
+                train_loader,
+                val_loader,
                 MAX_STEPS,
             )
             print(f"Final checkpoint saved: {checkpoint_path}")
