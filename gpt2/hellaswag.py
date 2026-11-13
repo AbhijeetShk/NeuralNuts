@@ -112,7 +112,15 @@ def get_most_likely_row(tokens, mask, logits):
 
 
 @torch.no_grad()
-def evaluate(model, split="val", device="cpu", max_examples=None):
+def evaluate(
+    model,
+    split="val",
+    device="cuda",
+    max_examples=None,
+    distributed=False,
+    rank=0,
+    world_size=1,
+):
     model.eval()
 
     total = 0

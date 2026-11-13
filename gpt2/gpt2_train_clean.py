@@ -45,7 +45,6 @@ MAX_GRAD_NORM = 1.0
 DROPOUT = 0.0
 USE_COMPILE = True
 
-
 enc = tiktoken.get_encoding("gpt2")
 
 SAMPLE_INTERVAL = 1000
