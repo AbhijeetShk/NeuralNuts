@@ -563,6 +563,7 @@ def get_raw_model(model):
 
     return model
 
+
 def get_rng_state():
     numpy_state = np.random.get_state()
 
@@ -579,9 +580,13 @@ def get_rng_state():
     }
 
     if torch.cuda.is_available():
-        state["cuda"] = torch.cuda.get_rng_state_all()
+        state["cuda"] = torch.cuda.get_rng_state()
 
-    if hasattr(torch, "mps") and hasattr(torch.mps, "get_rng_state"):
+    if (
+        hasattr(torch, "mps")
+        and hasattr(torch.mps, "get_rng_state")
+        and hasattr(torch.mps, "set_rng_state")
+    ):
         state["mps"] = torch.mps.get_rng_state()
 
     return state
@@ -602,7 +607,7 @@ def set_rng_state(state):
     torch.set_rng_state(state["torch"].cpu())
 
     if "cuda" in state and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all([rng.cpu() for rng in state["cuda"]])
+        torch.cuda.set_rng_state(state["cuda"].cpu())
 
     if (
         "mps" in state
@@ -610,36 +615,59 @@ def set_rng_state(state):
         and hasattr(torch.mps, "set_rng_state")
     ):
         torch.mps.set_rng_state(state["mps"].cpu())
+     
         
-        
-def save_checkpoint(
-    model,
-    optimizer,
-    scaler,
-    train_loader,
-    val_loader,
-    step,
-):
-    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-    checkpoint = {
-        "step": step,
-        "model": get_raw_model(model).state_dict(),
-        "optimizer": optimizer.state_dict(),
-        "scaler": scaler.state_dict(),
+def save_checkpoint(
+    model, optimizer, scaler, train_loader, val_loader, step
+):
+    distributed = torch.distributed.is_available() and torch.distributed.is_initialized()
+
+    if distributed:
+        rank = torch.distributed.get_rank()
+        world_size = torch.distributed.get_world_size()
+    else:
+        rank = 0
+        world_size = 1
+
+    local_state = {
         "train_loader": train_loader.state_dict(),
         "val_loader": val_loader.state_dict(),
         "rng": get_rng_state(),
     }
 
+    if distributed:
+        rank_states = [None for _ in range(world_size)]
+        torch.distributed.all_gather_object(rank_states, local_state)
+    else:
+        rank_states = [local_state]
+
     checkpoint_path = os.path.join(
         CHECKPOINT_DIR,
-        f"checkpoint_{step:08d}.pt",
+        f"checkpoint_{step:08d}.pt"
     )
 
-    torch.save(checkpoint, checkpoint_path)
+    if rank == 0:
+        os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-    return checkpoint_path
+        checkpoint = {
+            "version": 2,
+            "step": step,
+            "world_size": world_size,
+            "model": get_raw_model(model).state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scaler": scaler.state_dict(),
+            "rank_states": rank_states,
+        }
+
+        torch.save(checkpoint, checkpoint_path)
+        print(f"Checkpoint saved: {checkpoint_path}")
+
+    if distributed:
+        torch.distributed.barrier()
+
+    return checkpoint_path if rank == 0 else None
+
 
 def load_checkpoint(
     model,
@@ -650,22 +678,43 @@ def load_checkpoint(
     checkpoint_path,
     device,
 ):
+    distributed = torch.distributed.is_available() and torch.distributed.is_initialized()
+
+    if distributed:
+        rank = torch.distributed.get_rank()
+        world_size = torch.distributed.get_world_size()
+    else:
+        rank = 0
+        world_size = 1
+
     checkpoint = torch.load(
         checkpoint_path,
         map_location=device,
         weights_only=False,
     )
 
+    if checkpoint.get("version") != 2:
+        raise ValueError("Unsupported checkpoint version")
+
+    if checkpoint["world_size"] != world_size:
+        raise ValueError(
+            f"Checkpoint world size is {checkpoint['world_size']}, "
+            f"but current world size is {world_size}"
+        )
+
     get_raw_model(model).load_state_dict(checkpoint["model"])
     optimizer.load_state_dict(checkpoint["optimizer"])
     scaler.load_state_dict(checkpoint["scaler"])
 
-    train_loader.load_state_dict(checkpoint["train_loader"])
-    val_loader.load_state_dict(checkpoint["val_loader"])
+    rank_state = checkpoint["rank_states"][rank]
 
-    set_rng_state(checkpoint["rng"])
+    train_loader.load_state_dict(rank_state["train_loader"])
+    val_loader.load_state_dict(rank_state["val_loader"])
+
+    set_rng_state(rank_state["rng"])
 
     return checkpoint["step"]
+
 
 # Training
 
@@ -939,7 +988,7 @@ def train():
             if distributed:
                 dist.barrier()
 
-            if is_master:
+            # if is_master:
                 checkpoint_path = save_checkpoint(
                         model,
                         optimizer,
@@ -958,7 +1007,7 @@ def train():
         if distributed:
             dist.barrier()
 
-        if is_master:
+        # if is_master:
             checkpoint_path = save_checkpoint(
                 model,
                 optimizer,
