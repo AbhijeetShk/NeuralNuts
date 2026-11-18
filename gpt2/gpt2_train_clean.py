@@ -16,15 +16,22 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import hellaswag
 import random
 
-CHECKPOINT_DIR = os.path.join(os.path.dirname(__file__), "checkpoints")
+
+CHECKPOINT_DIR = os.path.join(
+    os.path.dirname(__file__),
+    "checkpoints",
+)
+
 SAVE_INTERVAL = 1000
 RESUME_FROM = None
 
-# config
-
 SEED = 1337
 
-DATA_DIR = "data_smoke"
+DATA_DIR = os.path.join(
+    os.path.dirname(__file__),
+    "data_fineweb_test",
+)
+
 VOCAB_SIZE = 50304
 ORIGINAL_VOCAB_SIZE = 50257
 
@@ -32,22 +39,23 @@ BLOCK_SIZE = 16
 MICRO_BATCH_SIZE = 4
 GRAD_ACCUM_STEPS = 4
 
-MAX_STEPS = 3
-HELLASWAG_EVAL_INTERVAL = 2
-HELLASWAG_EVAL_EXAMPLES = 10
-EVAL_INTERVAL = 10
-EVAL_ITERS = 3
+MAX_STEPS = 5
 
 MAX_LR = 6e-4
 MIN_LR = MAX_LR * 0.1
 WARMUP_STEPS = 2
+
 WEIGHT_DECAY = 0.1
 MAX_GRAD_NORM = 1.0
-
 DROPOUT = 0.0
+
 USE_COMPILE = True
 
-enc = tiktoken.get_encoding("gpt2")
+EVAL_INTERVAL = 2
+EVAL_ITERS = 2
+
+HELLASWAG_EVAL_INTERVAL = 1000
+HELLASWAG_EVAL_EXAMPLES = 10
 
 SAMPLE_INTERVAL = 1000
 SAMPLE_MAX_NEW_TOKENS = 80
@@ -58,18 +66,9 @@ SAMPLE_PROMPTS = [
     "The future of artificial intelligence",
     "In a distant land",
 ]
-MAX_STEPS = 5
-SAVE_INTERVAL = 2
-RESUME_FROM = os.path.join(
-    CHECKPOINT_DIR,
-    "checkpoint_00000003.pt",
-)
 
-BLOCK_SIZE = 16
-MAX_STEPS = 5
-MAX_GRAD_NORM = 1.0
-GRAD_ACCUM_STEPS = 4
-RESUME_FROM = None
+enc = tiktoken.get_encoding("gpt2")
+
 
 def setup_distributed():
     distributed = int(os.environ.get("WORLD_SIZE", "1")) > 1
@@ -798,6 +797,51 @@ def train():
         num_processes=world_size,
         device=device,
     )
+        
+
+    test_train_loader = DataLoaderLite(
+        B=4,
+        T=16,
+        data_dir="data_fineweb_test",
+        split="train",
+        process_rank=rank,
+        num_processes=world_size,
+        device=device,
+    )
+
+    test_val_loader = DataLoaderLite(
+        B=4,
+        T=16,
+        data_dir="data_fineweb_test",
+        split="val",
+        process_rank=rank,
+        num_processes=world_size,
+        device=device,
+    )
+
+
+    for split, loader, num_batches in [
+        ("train", test_train_loader, 160),
+        ("val", test_val_loader, 3),
+    ]:
+        for i in range(num_batches):
+            x, y = loader.next_batch()
+
+            assert x.shape == (4, 16)
+            assert y.shape == (4, 16)
+
+            assert x.dtype == torch.int64
+            assert y.dtype == torch.int64
+
+            assert torch.equal(
+                x[:, 1:],
+                y[:, :-1]
+            )
+
+        print(f"{split} loader verification: PASSED")
+
+        print("FineWeb-Edu shard loading: PASSED")
+
     train_loader_state = train_loader.state_dict()
 
     x1, y1 = train_loader.next_batch()
@@ -995,7 +1039,7 @@ def train():
                         scaler,
                         train_loader,
                         val_loader,
-                        MAX_STEPS,
+                        step+1,
                     )
                 print(f"Checkpoint saved: {checkpoint_path}")
 
