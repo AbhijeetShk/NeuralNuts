@@ -1,9 +1,14 @@
 import os
+import glob
+import json
 import argparse
-
 import numpy as np
 import tiktoken
 from datasets import load_dataset
+
+
+DATASET_NAME = "HuggingFaceFW/fineweb-edu"
+DATASET_CONFIG = "sample-10BT"
 
 
 class ShardWriter:
@@ -12,146 +17,237 @@ class ShardWriter:
         self.prefix = prefix
         self.shard_size = shard_size
         self.shard_index = 0
-        self.buffer = np.empty(shard_size, dtype=np.uint16)
-        self.position = 0
+        self.buffer = []
+        self.buffer_tokens = 0
         self.total_tokens = 0
+
+        os.makedirs(output_dir, exist_ok=True)
+
+    @property
+    def token_count(self):
+        return self.total_tokens + self.buffer_tokens
 
     def add_tokens(self, tokens):
         tokens = np.asarray(tokens, dtype=np.uint16)
-        self.total_tokens += len(tokens)
-
         offset = 0
 
         while offset < len(tokens):
-            space = self.shard_size - self.position
-            count = min(space, len(tokens) - offset)
+            remaining = self.shard_size - self.buffer_tokens
+            take = min(remaining, len(tokens) - offset)
 
-            self.buffer[self.position:self.position + count] = (
-                tokens[offset:offset + count]
+            self.buffer.append(
+                tokens[offset:offset + take].copy()
             )
 
-            self.position += count
-            offset += count
+            self.buffer_tokens += take
+            offset += take
 
-            if self.position == self.shard_size:
+            if self.buffer_tokens == self.shard_size:
                 self.flush()
 
     def flush(self):
-        if self.position == 0:
+        if not self.buffer:
             return
 
-        path = os.path.join(
+        tokens = np.concatenate(self.buffer)
+
+        filename = os.path.join(
             self.output_dir,
             f"{self.prefix}_{self.shard_index:05d}.npy",
         )
 
-        np.save(path, self.buffer[:self.position])
+        np.save(filename, tokens)
 
-        print(f"Wrote {path}: {self.position:,} tokens")
-
+        self.total_tokens += len(tokens)
         self.shard_index += 1
-        self.position = 0
+        self.buffer = []
+        self.buffer_tokens = 0
 
-    def close(self):
+        print(
+            f"Saved {filename} "
+            f"({len(tokens):,} tokens)"
+        )
+
+    def finish(self):
         self.flush()
 
 
-def main():
-    parser = argparse.ArgumentParser()
+def prepare_data(
+    output_dir,
+    max_tokens,
+    val_tokens,
+    shard_size,
+    max_documents,
+    overwrite,
+):
+    if max_tokens <= val_tokens:
+        raise ValueError(
+            "max_tokens must be greater than val_tokens"
+        )
 
-    parser.add_argument(
-        "--dataset",
-        default="HuggingFaceFW/fineweb-edu",
+    if shard_size <= 0:
+        raise ValueError("shard_size must be positive")
+
+    if val_tokens < 0:
+        raise ValueError("val_tokens cannot be negative")
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    existing_shards = (
+        glob.glob(os.path.join(output_dir, "train_*.npy"))
+        + glob.glob(os.path.join(output_dir, "val_*.npy"))
     )
-    parser.add_argument("--config", default="sample-10BT")
-    parser.add_argument("--split", default="train")
-    parser.add_argument("--text-column", default="text")
-    parser.add_argument("--output-dir", default="data_fineweb")
-    parser.add_argument("--shard-size", type=int, default=100_000_000)
-    parser.add_argument("--max-documents", type=int, default=0)
-    parser.add_argument("--val-tokens", type=int, default=100_000_000)
 
-    args = parser.parse_args()
+    if existing_shards and not overwrite:
+        raise FileExistsError(
+            f"Existing dataset shards found in {output_dir}. "
+            "Use --overwrite to replace them."
+        )
 
-    if args.shard_size < 2:
-        parser.error("--shard-size must be at least 2")
-
-    if args.max_documents < 0:
-        parser.error("--max-documents cannot be negative")
-
-    if args.val_tokens < 1:
-        parser.error("--val-tokens must be positive")
-
-    os.makedirs(args.output_dir, exist_ok=True)
+    if overwrite:
+        for path in existing_shards:
+            os.remove(path)
 
     enc = tiktoken.get_encoding("gpt2")
 
-    dataset = load_dataset(
-        args.dataset,
-        name=args.config,
-        split=args.split,
-        streaming=True,
+    train_writer = ShardWriter(
+        output_dir,
+        "train",
+        shard_size,
     )
 
     val_writer = ShardWriter(
-        args.output_dir,
+        output_dir,
         "val",
-        args.shard_size,
+        shard_size,
     )
 
-    train_writer = ShardWriter(
-        args.output_dir,
-        "train",
-        args.shard_size,
+    train_token_target = max_tokens - val_tokens
+
+    print("Loading FineWeb-Edu...")
+    print(f"Dataset: {DATASET_NAME}")
+    print(f"Configuration: {DATASET_CONFIG}")
+    print(f"Training token target: {train_token_target:,}")
+    print(f"Validation token target: {val_tokens:,}")
+    print(f"Shard size: {shard_size:,}")
+
+    dataset = load_dataset(
+        DATASET_NAME,
+        name=DATASET_CONFIG,
+        split="train",
+        streaming=True,
     )
 
-    document_count = 0
+    documents_processed = 0
 
-    try:
-        for example in dataset:
-            text = example.get(args.text_column)
+    for document in dataset:
+        if max_documents and documents_processed >= max_documents:
+            break
 
-            if not isinstance(text, str) or not text.strip():
-                continue
+        text = document.get("text")
 
-            tokens = [enc.eot_token] + enc.encode_ordinary(text)
+        if not text or not text.strip():
+            continue
 
-            remaining_val_tokens = max(
-                0,
-                args.val_tokens - val_writer.total_tokens,
+        document_tokens = np.asarray(
+            [enc.eot_token] + enc.encode_ordinary(text),
+            dtype=np.uint16,
+        )
+
+        documents_processed += 1
+
+        if val_writer.token_count < val_tokens:
+            val_writer.add_tokens(document_tokens)
+        else:
+            train_writer.add_tokens(document_tokens)
+
+        if train_writer.token_count >= train_token_target:
+            break
+
+        if documents_processed % 1000 == 0:
+            print(
+                f"Documents: {documents_processed:,} | "
+                f"Train: {train_writer.token_count:,} | "
+                f"Validation: {val_writer.token_count:,}"
             )
 
-            val_count = min(len(tokens), remaining_val_tokens)
+    train_writer.finish()
+    val_writer.finish()
 
-            if val_count:
-                val_writer.add_tokens(tokens[:val_count])
+    del dataset
 
-            if val_count < len(tokens):
-                train_writer.add_tokens(tokens[val_count:])
+    manifest = {
+        "dataset": DATASET_NAME,
+        "configuration": DATASET_CONFIG,
+        "tokenizer": "gpt2",
+        "dtype": "uint16",
+        "documents_processed": documents_processed,
+        "train_tokens": train_writer.total_tokens,
+        "val_tokens": val_writer.total_tokens,
+        "train_shards": train_writer.shard_index,
+        "val_shards": val_writer.shard_index,
+        "shard_size": shard_size,
+    }
 
-            document_count += 1
+    manifest_path = os.path.join(
+        output_dir,
+        "metadata.json",
+    )
 
-            if args.max_documents and document_count >= args.max_documents:
-                break
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=4)
 
-    finally:
-        val_writer.close()
-        train_writer.close()
-
-    if val_writer.total_tokens == 0:
-        raise ValueError("No validation tokens were produced.")
-
-    if train_writer.total_tokens == 0:
-        raise ValueError("No training tokens were produced.")
-
-    print("\nData preparation complete")
-    print(f"Documents processed: {document_count:,}")
-    print(f"Training tokens: {train_writer.total_tokens:,}")
-    print(f"Validation tokens: {val_writer.total_tokens:,}")
-    print(f"Training shards: {train_writer.shard_index:,}")
-    print(f"Validation shards: {val_writer.shard_index:,}")
-    print(f"Output directory: {args.output_dir}")
+    print("\nDataset preparation complete")
+    print(json.dumps(manifest, indent=4))
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--output-dir",
+        default=os.path.join(
+            os.path.dirname(__file__),
+            "data_fineweb",
+        ),
+    )
+
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=10_000_000,
+    )
+
+    parser.add_argument(
+        "--val-tokens",
+        type=int,
+        default=1_000_000,
+    )
+
+    parser.add_argument(
+        "--shard-size",
+        type=int,
+        default=1_000_000,
+    )
+
+    parser.add_argument(
+        "--max-documents",
+        type=int,
+        default=0,
+    )
+
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+    )
+
+    args = parser.parse_args()
+
+    prepare_data(
+        output_dir=args.output_dir,
+        max_tokens=args.max_tokens,
+        val_tokens=args.val_tokens,
+        shard_size=args.shard_size,
+        max_documents=args.max_documents,
+        overwrite=args.overwrite,
+    )
